@@ -1,0 +1,14 @@
+# Reference config for the CRON service in Railway.
+# Create this as a second service in your Railway project (same repo/image as
+# the main one), then set its "Cron Schedule" field in the dashboard to e.g.
+# "0 15 * * *" (once daily at 15:00 UTC). Railway's minimum granularity is 1 minute.
+#
+# Docs: https://docs.railway.com/reference/cron-jobs
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python main.py --upload"
+restartPolicyType = "NEVER"
