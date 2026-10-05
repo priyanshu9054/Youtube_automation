@@ -1,14 +1,18 @@
-# Reference config for the CRON service in Railway.
-# Create this as a second service in your Railway project (same repo/image as
-# the main one), then set its "Cron Schedule" field in the dashboard to e.g.
-# "0 15 * * *" (once daily at 15:00 UTC). Railway's minimum granularity is 1 minute.
+# This service runs as a normal always-on Railway web service (NOT Railway's
+# own Cron Service type) — it exposes a small HTTP trigger that an external
+# scheduler (a daily Claude cron job, in this setup) calls once a day.
 #
-# Docs: https://docs.railway.com/reference/cron-jobs
+# If this service previously had a "Cron Schedule" set in the Railway
+# dashboard (Settings -> Cron Schedule), clear it — a cron schedule only
+# boots the container for that window, which would make /run unreachable
+# the rest of the day.
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python main.py --upload"
-restartPolicyType = "NEVER"
+startCommand = "python app.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
