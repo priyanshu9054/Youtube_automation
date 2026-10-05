@@ -1,18 +1,24 @@
 # YouTube Shorts Automation
 
-Generates one faceless YouTube Short end-to-end — topic → script (Groq /
-Llama-3.3-70b) → voiceover (edge-tts, free) → stock footage (Pixabay) →
-rendered vertical video (ffmpeg) → upload (YouTube Data API v3, single
-`youtube.upload` scope) — and optionally runs on a schedule via Railway's
-cron service.
+Generates one faceless YouTube Short end-to-end — topic → script (Groq) →
+voiceover (edge-tts, free) → stock footage (Pixabay if configured, else free
+Mixkit scraping, else a plain color background as last resort) → rendered
+vertical video (ffmpeg) → upload (YouTube Data API v3, single
+`youtube.upload` scope) — runs as a single Railway **Cron Service**.
 
 ## 1. Credentials you need
 
-| Credential | Where to get it |
-|---|---|
-| `GROQ_API_KEY` | https://console.groq.com/keys |
-| `PIXABAY_API_KEY` | https://pixabay.com/api/docs/ (instant, free) |
-| `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` / `YOUTUBE_REFRESH_TOKEN` | See step 2 below |
+| Credential | Required? | Where to get it |
+|---|---|---|
+| `GROQ_API_KEY` | Yes | https://console.groq.com/keys |
+| `PIXABAY_API_KEY` | No — leave blank to use the free Mixkit fallback instead | https://pixabay.com/api/docs/ (instant, free) |
+| `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` / `YOUTUBE_REFRESH_TOKEN` | Yes | See step 2 below |
+
+**Note on `GROQ_MODEL`:** the current default (`qwen/qwen3.8-27b`) is listed
+by Groq as a *preview* model — fine for testing, but Groq can deprecate
+preview models without notice, which would silently break an unattended cron
+job. For a production cron, consider pointing `GROQ_MODEL` at a
+non-preview/production model instead once you've confirmed script quality.
 
 Step-by-step walkthrough for Pixabay + YouTube OAuth (including why YouTube
 can't skip Google's consent screen, and how to avoid the 7-day-refresh-token
@@ -55,20 +61,32 @@ Check `output/` for the rendered file before you ever flip uploads to public.
 
 ## 4. Deploy to Railway
 
-1. `railway init` in this directory (or connect the GitHub repo in the Railway
-   dashboard).
-2. Set all the env vars from `.env` as Railway variables (Project → Variables).
-   Set `AUTO_UPLOAD=true` once you trust the pipeline.
-3. Railway builds from the `Dockerfile` automatically.
-4. For scheduling: add a **second Railway service** pointed at the same
-   repo/image, and set its Cron Schedule in the dashboard (e.g. `0 15 * * *`
-   for once daily at 15:00 UTC). See `railway.toml` for the reference deploy
-   config. Railway's cron minimum granularity is 1 minute; don't run this more
-   than a few times a day — see the content-policy note below.
-5. Topic-dedup history (`data/posted_topics.json`) is written inside the
-   container, which is ephemeral on Railway — attach a **volume** mounted at
-   `/app/data` to the service so it survives between cron runs. Without it,
-   the script writer just won't know what it already covered.
+This app is a single batch job (generate one video, upload it, exit) — on
+Railway that maps to **one service of type Cron**, not a long-running web
+service. `railway.toml` already has the right `[build]`/`[deploy]` block
+(`Dockerfile` builder, `startCommand = "python main.py --upload"`,
+`restartPolicyType = "NEVER"` since a cron run should finish and stop, not
+restart in a crash loop).
+
+1. `railway login`, then `railway init` in this directory (or connect the
+   GitHub repo from the Railway dashboard instead — either works, since
+   `railway.toml` carries the config).
+2. In the Railway dashboard, open the service's **Settings → Cron Schedule**
+   and set it, e.g. `0 15 * * *` for once daily at 15:00 UTC. (Minimum
+   granularity is 1 minute; don't go more than a few times a day — see the
+   content-policy note below.)
+3. **Project → Variables**: paste in every value from your local `.env`
+   (`GROQ_API_KEY`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`, `PIXABAY_API_KEY`
+   if you have one, `CHANNEL_NICHE`, etc). Set `AUTO_UPLOAD=true` only once
+   you've reviewed a few local renders and trust the output.
+4. Attach a **volume** mounted at `/app/data` to the service. Topic-dedup
+   history (`data/posted_topics.json`) is written inside the container,
+   which is otherwise wiped between cron runs — without the volume, the
+   script writer won't remember what topics it already covered, and you'll
+   get more repeats.
+5. Trigger one manual run from the dashboard ("Deploy" / "Run now") before
+   trusting the schedule, and check Railway's logs for the `Uploaded
+   successfully: https://youtu.be/...` line.
 
 ## 5. Content policy — read before turning on `AUTO_UPLOAD`
 
@@ -94,7 +112,7 @@ main.py                     CLI entrypoint
 src/config.py                Loads/validates env vars
 src/script_writer.py         Groq call -> title/description/tags/sentences
 src/voice.py                 edge-tts synthesis per sentence
-src/footage.py                Pixabay search + download
+src/footage.py                Pixabay search (if keyed) -> Mixkit fallback -> color-card fallback
 src/render.py                 ffmpeg: normalize clips, concat, burn captions
 src/uploader.py                YouTube resumable upload
 src/youtube_client.py          OAuth client (single youtube.upload scope)
