@@ -1,5 +1,6 @@
 openai==1.54.0
-edge-tts==7.0.3
+httpx<0.28.0
+edge-tts>=7.0.0
 requests==2.32.3
 google-api-python-client==2.149.0
 google-auth==2.35.0

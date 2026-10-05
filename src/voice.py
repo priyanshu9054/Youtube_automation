@@ -1,10 +1,15 @@
 import asyncio
 import json
+import logging
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 import edge_tts
+
+log = logging.getLogger("voice")
 
 
 @dataclass
@@ -13,23 +18,42 @@ class VoiceClip:
     duration_seconds: float
 
 
-def _ffprobe_duration(path: Path) -> float:
+def _audio_duration(path: Path) -> float:
+    # 1. Try ffprobe if available
+    if shutil.which("ffprobe"):
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return float(json.loads(result.stdout)["format"]["duration"])
+        except Exception as e:
+            log.debug("ffprobe failed (%s), falling back to ffmpeg", e)
+
+    # 2. Fallback to ffmpeg
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "json",
-            str(path),
-        ],
+        [ffmpeg_bin, "-i", str(path)],
         capture_output=True,
         text=True,
-        check=True,
     )
-    return float(json.loads(result.stdout)["format"]["duration"])
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+    if m:
+        hours, minutes, seconds = m.groups()
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+    raise RuntimeError(f"Could not determine audio duration for {path} using ffprobe or ffmpeg")
 
 
 async def _synthesize(text: str, voice: str, out_path: Path) -> None:
@@ -39,4 +63,4 @@ async def _synthesize(text: str, voice: str, out_path: Path) -> None:
 
 def synthesize_sentence(text: str, voice: str, out_path: Path) -> VoiceClip:
     asyncio.run(_synthesize(text, voice, out_path))
-    return VoiceClip(audio_path=out_path, duration_seconds=_ffprobe_duration(out_path))
+    return VoiceClip(audio_path=out_path, duration_seconds=_audio_duration(out_path))

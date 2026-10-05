@@ -1,12 +1,34 @@
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 TARGET_W = 1080
 TARGET_H = 1920
-# Installed via Dockerfile (fonts-dejavu-core). On macOS for local testing,
-# override with a path to any .ttf you have, e.g. /System/Library/Fonts/Supplemental/Arial.ttf
+
 DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+CANDIDATE_FONTS = [
+    Path(DEFAULT_FONT),
+    Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+    Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+    Path("/Library/Fonts/Arial Unicode.ttf"),
+    Path("/Library/Fonts/Arial.ttf"),
+    Path("/System/Library/Fonts/Helvetica.ttc"),
+]
+
+
+def resolve_font_path(font_path: str = DEFAULT_FONT) -> str:
+    """Resolve an available system TTF font file for ffmpeg drawtext filter."""
+    if font_path and Path(font_path).exists():
+        return font_path
+    env_font = os.environ.get("FONT_PATH")
+    if env_font and Path(env_font).exists():
+        return env_font
+    for candidate in CANDIDATE_FONTS:
+        if candidate.exists():
+            return str(candidate)
+    return font_path
 
 
 @dataclass
@@ -17,15 +39,22 @@ class Segment:
     duration: float
 
 
+import textwrap
+
 def _escape_drawtext(text: str) -> str:
-    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    # Wrap text for vertical Shorts screens
+    wrapped = textwrap.fill(text, width=32)
+    # Use typographic quotes to prevent ffmpeg filter parsing collisions
+    clean = wrapped.replace("'", "’").replace('"', "”")
+    return clean.replace("\\", "\\\\").replace(":", "\\:").replace("%", "\\%")
 
 
 def _normalize_clip(src: Path, duration: float, out_path: Path) -> None:
     """Scale/crop a source clip to 1080x1920, mute it, and trim/loop it to `duration`."""
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-stream_loop",
             "-1",
@@ -50,9 +79,10 @@ def _normalize_clip(src: Path, duration: float, out_path: Path) -> None:
 
 def _concat(paths: list[Path], out_path: Path, list_file: Path) -> None:
     list_file.write_text("".join(f"file '{p.resolve()}'\n" for p in paths))
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-f",
             "concat",
@@ -73,6 +103,7 @@ def render_video(
     segments: list[Segment], work_dir: Path, out_path: Path, font_path: str = DEFAULT_FONT
 ) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
+    resolved_font = resolve_font_path(font_path)
 
     normalized_clips = []
     for i, seg in enumerate(segments):
@@ -93,7 +124,7 @@ def render_video(
         start, end = t, t + seg.duration
         escaped = _escape_drawtext(seg.text)
         draws.append(
-            f"drawtext=fontfile='{font_path}':text='{escaped}':"
+            f"drawtext=fontfile='{resolved_font}':text='{escaped}':"
             "fontcolor=white:fontsize=56:borderw=4:bordercolor=black:"
             "x=(w-text_w)/2:y=h-350:line_spacing=10:"
             f"enable='between(t,{start},{end})'"
@@ -101,9 +132,10 @@ def render_video(
         t = end
     drawtext_filter = ",".join(draws)
 
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_bin,
             "-y",
             "-i",
             str(silent_video),

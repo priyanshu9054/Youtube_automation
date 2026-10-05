@@ -6,7 +6,7 @@ from openai import OpenAI
 from src.config import Config
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL = "llama-3.3-70b-versatile"
+DEFAULT_MODEL = "qwen/qwen3.8-27b"
 
 
 @dataclass
@@ -69,7 +69,7 @@ visual_keywords phrase suitable for searching stock footage (concrete, visual, \
 not abstract)."""
 
     response = client.chat.completions.create(
-        model=MODEL,
+        model=getattr(cfg, "groq_model", DEFAULT_MODEL) or DEFAULT_MODEL,
         temperature=0.8,
         max_tokens=2000,
         response_format={"type": "json_object"},

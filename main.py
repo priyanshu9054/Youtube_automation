@@ -14,6 +14,11 @@ def main() -> None:
         help="Upload the result to YouTube. Overrides AUTO_UPLOAD if passed.",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate and render video locally without uploading to YouTube.",
+    )
+    parser.add_argument(
         "--out-dir",
         default="output",
         help="Directory to save the rendered video (default: ./output)",
@@ -23,7 +28,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     cfg = Config.load()
-    upload = args.upload or cfg.auto_upload
+    upload = (args.upload or cfg.auto_upload) and not args.dry_run
 
     run_once(cfg, Path(args.out_dir), upload)
 

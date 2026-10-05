@@ -1,9 +1,16 @@
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Ensure virtualenv bin directory is in PATH for ffmpeg/ffprobe subprocess calls
+_venv_bin = str(Path(sys.prefix) / "bin")
+if _venv_bin not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = f"{_venv_bin}:{os.environ.get('PATH', '')}"
 
 
 def _require(name: str) -> str:
@@ -25,12 +32,13 @@ class Config:
     sentence_count: int
     upload_privacy_status: str
     auto_upload: bool
+    groq_model: str
 
     @classmethod
     def load(cls) -> "Config":
         return cls(
             groq_api_key=_require("GROQ_API_KEY"),
-            pixabay_api_key=_require("PIXABAY_API_KEY"),
+            pixabay_api_key=os.environ.get("PIXABAY_API_KEY", "").strip(),
             youtube_client_id=_require("YOUTUBE_CLIENT_ID"),
             youtube_client_secret=_require("YOUTUBE_CLIENT_SECRET"),
             youtube_refresh_token=_require("YOUTUBE_REFRESH_TOKEN"),
@@ -41,4 +49,5 @@ class Config:
             sentence_count=int(os.environ.get("SENTENCE_COUNT", "8")),
             upload_privacy_status=os.environ.get("UPLOAD_PRIVACY_STATUS", "private"),
             auto_upload=os.environ.get("AUTO_UPLOAD", "false").lower() == "true",
+            groq_model=os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b"),
         )
