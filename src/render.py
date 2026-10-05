@@ -41,12 +41,33 @@ class Segment:
 
 import textwrap
 
-def _escape_drawtext(text: str) -> str:
-    # Wrap text for vertical Shorts screens
-    wrapped = textwrap.fill(text, width=32)
-    # Use typographic quotes to prevent ffmpeg filter parsing collisions
-    clean = wrapped.replace("'", "’").replace('"', "”")
-    return clean.replace("\\", "\\\\").replace(":", "\\:").replace("%", "\\%")
+
+def _srt_timestamp(seconds: float) -> str:
+    millis = round(seconds * 1000)
+    h, millis = divmod(millis, 3_600_000)
+    m, millis = divmod(millis, 60_000)
+    s, millis = divmod(millis, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{millis:03d}"
+
+
+def _write_srt(segments: list["Segment"], out_path: Path) -> Path:
+    lines = []
+    t = 0.0
+    for i, seg in enumerate(segments, start=1):
+        start, end = t, t + seg.duration
+        wrapped = textwrap.fill(seg.text, width=32)
+        lines.append(str(i))
+        lines.append(f"{_srt_timestamp(start)} --> {_srt_timestamp(end)}")
+        lines.append(wrapped)
+        lines.append("")
+        t = end
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+def _escape_filter_path(path: Path) -> str:
+    # ffmpeg filtergraph argument escaping: colons separate filter options.
+    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
 def _normalize_clip(src: Path, duration: float, out_path: Path) -> None:
@@ -69,7 +90,9 @@ def _normalize_clip(src: Path, duration: float, out_path: Path) -> None:
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "ultrafast",
+            "-threads",
+            "1",
             str(out_path),
         ],
         check=True,
@@ -117,20 +140,16 @@ def render_video(
     audio_concat = work_dir / "audio.mp3"
     _concat([seg.audio_path for seg in segments], audio_concat, work_dir / "audio.txt")
 
-    # Burn one caption per segment, shown for that segment's time window.
-    t = 0.0
-    draws = []
-    for seg in segments:
-        start, end = t, t + seg.duration
-        escaped = _escape_drawtext(seg.text)
-        draws.append(
-            f"drawtext=fontfile='{resolved_font}':text='{escaped}':"
-            "fontcolor=white:fontsize=56:borderw=4:bordercolor=black:"
-            "x=(w-text_w)/2:y=h-350:line_spacing=10:"
-            f"enable='between(t,{start},{end})'"
-        )
-        t = end
-    drawtext_filter = ",".join(draws)
+    # One subtitles filter (libass) instead of N chained drawtext filters --
+    # much lighter peak memory for the same visual result, which matters on
+    # memory-constrained hosts (chained drawtext was getting OOM-killed).
+    srt_path = _write_srt(segments, work_dir / "captions.srt")
+    font_dir = str(Path(resolved_font).parent)
+    subtitles_filter = (
+        f"subtitles={_escape_filter_path(srt_path)}:fontsdir={_escape_filter_path(Path(font_dir))}:"
+        "force_style='FontName=DejaVu Sans,Bold=1,FontSize=16,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Alignment=2,MarginV=60'"
+    )
 
     ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     subprocess.run(
@@ -142,7 +161,7 @@ def render_video(
             "-i",
             str(audio_concat),
             "-vf",
-            drawtext_filter,
+            subtitles_filter,
             "-map",
             "0:v:0",
             "-map",
@@ -150,7 +169,9 @@ def render_video(
             "-c:v",
             "libx264",
             "-preset",
-            "veryfast",
+            "ultrafast",
+            "-threads",
+            "1",
             "-c:a",
             "aac",
             "-shortest",
