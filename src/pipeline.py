@@ -6,6 +6,7 @@ from pathlib import Path
 from src.config import Config
 from src.footage import download_clip, find_clip_url, generate_fallback_clip
 from src.history import load_recent_titles, record_title
+from src.music import download_music, find_music_url
 from src.render import Segment, render_video
 from src.script_writer import generate_script
 from src.uploader import upload_short
@@ -59,8 +60,25 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> Path:
             safe_title = "youtube_short"
         out_path = out_dir / f"{safe_title}.mp4"
 
+        music_path = None
+        if cfg.enable_music:
+            try:
+                log.info("Finding background music for mood: %s", script.music_mood)
+                music_url = find_music_url(script.music_mood)
+                music_path = tmp_path / "music.mp3"
+                download_music(music_url, music_path)
+            except Exception as e:
+                log.warning("Background music fetch failed (%s); rendering without music.", e)
+                music_path = None
+
         log.info("Rendering final video...")
-        render_video(segments, tmp_path / "render", out_path)
+        render_video(
+            segments,
+            tmp_path / "render",
+            out_path,
+            music_path=music_path,
+            music_volume=cfg.music_volume,
+        )
 
     if upload:
         log.info("Uploading to YouTube (privacy=%s)...", cfg.upload_privacy_status)

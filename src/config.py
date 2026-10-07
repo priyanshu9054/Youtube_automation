@@ -33,6 +33,8 @@ class Config:
     upload_privacy_status: str
     auto_upload: bool
     groq_model: str
+    enable_music: bool
+    music_volume: float
 
     @classmethod
     def load(cls) -> "Config":
@@ -45,9 +47,11 @@ class Config:
             channel_niche=os.environ.get(
                 "CHANNEL_NICHE", "interesting bite-sized facts"
             ),
-            tts_voice=os.environ.get("TTS_VOICE", "en-US-AriaNeural"),
+            tts_voice=os.environ.get("TTS_VOICE", "en-US-AndrewNeural"),
             sentence_count=int(os.environ.get("SENTENCE_COUNT", "8")),
-            upload_privacy_status=os.environ.get("UPLOAD_PRIVACY_STATUS", "private"),
+            upload_privacy_status=os.environ.get("UPLOAD_PRIVACY_STATUS", "public"),
             auto_upload=os.environ.get("AUTO_UPLOAD", "false").lower() == "true",
             groq_model=os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b"),
+            enable_music=os.environ.get("ENABLE_MUSIC", "true").lower() == "true",
+            music_volume=float(os.environ.get("MUSIC_VOLUME", "0.15")),
         )

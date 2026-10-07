@@ -57,7 +57,9 @@ def _audio_duration(path: Path) -> float:
 
 
 async def _synthesize(text: str, voice: str, out_path: Path) -> None:
-    communicate = edge_tts.Communicate(text, voice)
+    # Slightly slower than default + a touch lower pitch reads less like a
+    # text-to-speech announcer and more like natural conversational narration.
+    communicate = edge_tts.Communicate(text, voice, rate="-4%", pitch="-2Hz")
     await communicate.save(str(out_path))
 
 

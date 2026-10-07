@@ -1,9 +1,11 @@
 import json
+import random
 from dataclasses import dataclass
 
 from openai import OpenAI
 
 from src.config import Config
+from src.music import ALLOWED_MOODS
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL = "qwen/qwen3.8-27b"
@@ -21,6 +23,7 @@ class VideoScript:
     description: str
     tags: list[str]
     sentences: list[Sentence]
+    music_mood: str
 
 
 SYSTEM_PROMPT = """You write scripts for a faceless YouTube Shorts channel.
@@ -40,6 +43,7 @@ Respond with ONLY strict JSON matching this shape, no markdown fences, no prose:
   "title": "...",          // <= 90 chars, no ALL CAPS spam
   "description": "...",     // 2-3 sentences + 3-5 relevant hashtags
   "tags": ["...", "..."],
+  "music_mood": "...",      // ONE word from the allowed mood list, matching this specific script's tone
   "sentences": [
     {"text": "...", "visual_keywords": "short stock-footage search phrase"}
   ]
@@ -66,7 +70,11 @@ def generate_script(
 Write a script for one YouTube Short, {cfg.sentence_count} sentences long. \
 Each sentence should be short enough to speak in 3-5 seconds. Each needs a \
 visual_keywords phrase suitable for searching stock footage (concrete, visual, \
-not abstract)."""
+not abstract).
+
+Pick music_mood as whichever single word from this list best fits THIS \
+script's specific tone and subject (not a generic default) \
+- {", ".join(ALLOWED_MOODS)}"""
 
     response = client.chat.completions.create(
         model=getattr(cfg, "groq_model", DEFAULT_MODEL) or DEFAULT_MODEL,
@@ -85,10 +93,15 @@ not abstract)."""
         raw_text = raw_text.removeprefix("json").strip()
     data = json.loads(raw_text)
 
+    music_mood = str(data.get("music_mood", "")).strip().lower()
+    if music_mood not in ALLOWED_MOODS:
+        music_mood = random.choice(ALLOWED_MOODS)
+
     return VideoScript(
         title=data["title"],
         description=data["description"],
         tags=data.get("tags", []),
+        music_mood=music_mood,
         sentences=[
             Sentence(text=s["text"], visual_keywords=s["visual_keywords"])
             for s in data["sentences"]

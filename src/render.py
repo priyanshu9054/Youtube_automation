@@ -123,7 +123,12 @@ def _concat(paths: list[Path], out_path: Path, list_file: Path) -> None:
 
 
 def render_video(
-    segments: list[Segment], work_dir: Path, out_path: Path, font_path: str = DEFAULT_FONT
+    segments: list[Segment],
+    work_dir: Path,
+    out_path: Path,
+    font_path: str = DEFAULT_FONT,
+    music_path: Path | None = None,
+    music_volume: float = 0.15,
 ) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
     resolved_font = resolve_font_path(font_path)
@@ -151,33 +156,38 @@ def render_video(
         "OutlineColour=&H00000000,BorderStyle=1,Outline=2,Alignment=2,MarginV=60'"
     )
 
+    total_duration = sum(seg.duration for seg in segments)
     ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
-    subprocess.run(
-        [
-            ffmpeg_bin,
-            "-y",
-            "-i",
-            str(silent_video),
-            "-i",
-            str(audio_concat),
-            "-vf",
-            subtitles_filter,
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-threads",
-            "1",
-            "-c:a",
-            "aac",
-            "-shortest",
-            str(out_path),
-        ],
-        check=True,
-        capture_output=True,
-    )
+
+    cmd = [ffmpeg_bin, "-y", "-i", str(silent_video), "-i", str(audio_concat)]
+
+    if music_path is not None:
+        fade_start = max(0.0, total_duration - 1.5)
+        cmd += ["-stream_loop", "-1", "-i", str(music_path)]
+        filter_complex = (
+            f"[2:a]atrim=0:{total_duration},volume={music_volume},"
+            f"afade=t=out:st={fade_start}:d=1.5[music];"
+            "[1:a][music]amix=inputs=2:duration=first:dropout_transition=0,"
+            "volume=2[aout]"
+        )
+        cmd += ["-filter_complex", filter_complex, "-map", "0:v:0", "-map", "[aout]"]
+    else:
+        cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+
+    cmd += ["-vf", subtitles_filter]
+
+    cmd += [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-threads",
+        "1",
+        "-c:a",
+        "aac",
+        "-shortest",
+        str(out_path),
+    ]
+
+    subprocess.run(cmd, check=True, capture_output=True)
     return out_path

@@ -2,9 +2,11 @@
 
 Generates one faceless YouTube Short end-to-end — topic → script (Groq) →
 voiceover (edge-tts, free) → stock footage (Pixabay if configured, else free
-Mixkit scraping, else a plain color background as last resort) → rendered
-vertical video (ffmpeg) → upload (YouTube Data API v3, single
-`youtube.upload` scope) — runs as a single Railway **Cron Service**.
+Mixkit scraping, else a plain color background as last resort) → background
+music (free Mixkit tracks, mood picked by the script writer to match that
+video's specific topic) → rendered vertical video (ffmpeg) → upload (YouTube
+Data API v3, single `youtube.upload` scope) — runs as a single Railway
+**Cron Service**.
 
 ## 1. Credentials you need
 
@@ -54,7 +56,7 @@ cp .env.example .env   # fill in all values
 pip install -r requirements.txt
 brew install ffmpeg    # macOS; apt-get install ffmpeg on Linux
 python main.py          # renders only, does not upload (AUTO_UPLOAD=false)
-python main.py --upload # also uploads, as UPLOAD_PRIVACY_STATUS (default: private)
+python main.py --upload # also uploads, as UPLOAD_PRIVACY_STATUS (default: public)
 ```
 
 Check `output/` for the rendered file before you ever flip uploads to public.
@@ -102,8 +104,8 @@ the right side of that:
   especially on a new channel.
 - Use one real, verified channel/account. Don't run multiple accounts to
   multiply output — that's a distinct, bannable TOS violation.
-- Default `UPLOAD_PRIVACY_STATUS=private` until you've manually reviewed
-  several outputs for quality and accuracy.
+- `UPLOAD_PRIVACY_STATUS=public` publishes uploads immediately; set it to
+  `private` instead if you want to review outputs before they go live.
 
 ## Project layout
 
@@ -113,7 +115,8 @@ src/config.py                Loads/validates env vars
 src/script_writer.py         Groq call -> title/description/tags/sentences
 src/voice.py                 edge-tts synthesis per sentence
 src/footage.py                Pixabay search (if keyed) -> Mixkit fallback -> color-card fallback
-src/render.py                 ffmpeg: normalize clips, concat, burn captions
+src/music.py                   Mixkit mood-matched background music search
+src/render.py                 ffmpeg: normalize clips, concat, mix music under voice, burn captions
 src/uploader.py                YouTube resumable upload
 src/youtube_client.py          OAuth client (single youtube.upload scope)
 src/history.py                  Local JSON log of past titles (topic dedup)
