@@ -31,7 +31,13 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> Path:
         for i, sentence in enumerate(script.sentences):
             log.info("Synthesizing voice for sentence %d/%d", i + 1, len(script.sentences))
             audio_path = tmp_path / f"voice_{i:03d}.mp3"
-            voice_clip = synthesize_sentence(sentence.text, cfg.tts_voice, audio_path)
+            voice_clip = synthesize_sentence(
+                sentence.text,
+                cfg.tts_voice,
+                audio_path,
+                rate=cfg.tts_rate,
+                pitch=cfg.tts_pitch,
+            )
 
             raw_clip_path = tmp_path / f"raw_{i:03d}.mp4"
             try:

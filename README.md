@@ -103,8 +103,18 @@ the right side of that:
   especially on a new channel.
 - Use one real, verified channel/account. Don't run multiple accounts to
   multiply output — that's a distinct, bannable TOS violation.
+- `TTS_VOICE` / `TTS_RATE` / `TTS_PITCH` control narration. The default is
+  `en-US-ChristopherNeural` at `-12%` / `-15Hz` — a deep, heavy, deliberate
+  read suited to the Stoic/philosophy niche. Alternatives: `en-US-GuyNeural`
+  (more intense), `en-GB-ThomasNeural` (British gravitas). Lowering `TTS_PITCH`
+  darkens the tone further, but `-15Hz` is the practical floor before it starts
+  to sound synthetic.
 - `UPLOAD_PRIVACY_STATUS=public` publishes uploads immediately; set it to
-  `private` instead if you want to review outputs before they go live.
+  `private` instead if you want to review outputs before they go live. Only
+  `public`, `private` and `unlisted` are accepted (case-insensitive) — anything
+  else logs a warning and falls back to `public`. After each upload the applied
+  privacy status is read back from YouTube's response and logged; a mismatch
+  (e.g. YouTube holding the video back) logs a warning naming the video ID.
 
 ## Project layout
 

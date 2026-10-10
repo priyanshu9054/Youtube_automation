@@ -44,4 +44,40 @@ def upload_short(
 
     video_id = response["id"]
     log.info("Upload finished! Video ID: %s", video_id)
+    _verify_privacy(response, video_id, privacy_status)
     return video_id
+
+
+def _verify_privacy(response: dict, video_id: str, expected: str) -> None:
+    """Confirm YouTube actually applied `expected` to the finished upload.
+
+    The insert response carries the `status` part we asked for, so this needs no
+    extra request (and no `youtube.readonly` scope). YouTube can override the
+    requested status — an unverified channel, a copyright or policy hold — which
+    would otherwise leave a video sitting unseen.
+    """
+    status = response.get("status") or {}
+    actual = status.get("privacyStatus")
+
+    if actual == expected:
+        log.info("Verified privacy status: %s", actual)
+        return
+
+    if actual is None:
+        log.warning(
+            "Upload response for %s carried no privacy status; "
+            "confirm it is %s in YouTube Studio.",
+            video_id,
+            expected,
+        )
+        return
+
+    log.warning(
+        "Privacy mismatch for %s: requested %r but YouTube applied %r "
+        "(uploadStatus=%s, rejectionReason=%s). Check the video in YouTube Studio.",
+        video_id,
+        expected,
+        actual,
+        status.get("uploadStatus"),
+        status.get("rejectionReason"),
+    )

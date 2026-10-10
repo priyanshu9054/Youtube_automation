@@ -56,13 +56,22 @@ def _audio_duration(path: Path) -> float:
     raise RuntimeError(f"Could not determine audio duration for {path} using ffprobe or ffmpeg")
 
 
-async def _synthesize(text: str, voice: str, out_path: Path) -> None:
-    # Slightly slower than default + a touch lower pitch reads less like a
-    # text-to-speech announcer and more like natural conversational narration.
-    communicate = edge_tts.Communicate(text, voice, rate="-4%", pitch="-2Hz")
+async def _synthesize(
+    text: str, voice: str, out_path: Path, rate: str, pitch: str
+) -> None:
+    # Slower than default + a lowered pitch gives the heavier, darker delivery
+    # this niche wants — weighted and deliberate rather than announcer-bright.
+    # -15Hz is about as low as this goes before it sounds synthetic.
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
     await communicate.save(str(out_path))
 
 
-def synthesize_sentence(text: str, voice: str, out_path: Path) -> VoiceClip:
-    asyncio.run(_synthesize(text, voice, out_path))
+def synthesize_sentence(
+    text: str,
+    voice: str,
+    out_path: Path,
+    rate: str = "-12%",
+    pitch: str = "-15Hz",
+) -> VoiceClip:
+    asyncio.run(_synthesize(text, voice, out_path, rate, pitch))
     return VoiceClip(audio_path=out_path, duration_seconds=_audio_duration(out_path))

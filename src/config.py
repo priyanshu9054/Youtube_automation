@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from dataclasses import dataclass
@@ -20,6 +21,27 @@ def _require(name: str) -> str:
     return value
 
 
+VALID_PRIVACY_STATUSES = ("public", "private", "unlisted")
+
+
+def _privacy_status() -> str:
+    """Normalise UPLOAD_PRIVACY_STATUS, falling back to public on anything odd.
+
+    A typo'd value would otherwise be handed straight to the YouTube API, so an
+    unrecognised setting fails loudly in the log and still publishes publicly.
+    """
+    raw = os.environ.get("UPLOAD_PRIVACY_STATUS", "public")
+    value = raw.strip().strip("\"'").lower()
+    if value not in VALID_PRIVACY_STATUSES:
+        logging.getLogger("config").warning(
+            "UPLOAD_PRIVACY_STATUS=%r is not one of %s; using 'public'.",
+            raw,
+            ", ".join(VALID_PRIVACY_STATUSES),
+        )
+        return "public"
+    return value
+
+
 @dataclass(frozen=True)
 class Config:
     groq_api_key: str
@@ -29,6 +51,8 @@ class Config:
     youtube_refresh_token: str
     channel_niche: str
     tts_voice: str
+    tts_rate: str
+    tts_pitch: str
     sentence_count: int
     upload_privacy_status: str
     auto_upload: bool
@@ -48,9 +72,11 @@ class Config:
             channel_niche=os.environ.get(
                 "CHANNEL_NICHE", "interesting bite-sized facts"
             ),
-            tts_voice=os.environ.get("TTS_VOICE", "en-US-AndrewNeural"),
+            tts_voice=os.environ.get("TTS_VOICE", "en-US-ChristopherNeural"),
+            tts_rate=os.environ.get("TTS_RATE", "-12%"),
+            tts_pitch=os.environ.get("TTS_PITCH", "-15Hz"),
             sentence_count=int(os.environ.get("SENTENCE_COUNT", "8")),
-            upload_privacy_status=os.environ.get("UPLOAD_PRIVACY_STATUS", "public"),
+            upload_privacy_status=_privacy_status(),
             auto_upload=os.environ.get("AUTO_UPLOAD", "false").lower() == "true",
             groq_model=os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b"),
             enable_music=os.environ.get("ENABLE_MUSIC", "true").lower() == "true",
