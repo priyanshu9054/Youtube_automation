@@ -16,11 +16,10 @@ Data API v3, single `youtube.upload` scope) — runs as a single Railway
 | `PIXABAY_API_KEY` | No — leave blank to use the free Mixkit fallback instead | https://pixabay.com/api/docs/ (instant, free) |
 | `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` / `YOUTUBE_REFRESH_TOKEN` | Yes | See step 2 below |
 
-**Note on `GROQ_MODEL`:** the current default (`qwen/qwen3.8-27b`) is listed
-by Groq as a *preview* model — fine for testing, but Groq can deprecate
-preview models without notice, which would silently break an unattended cron
-job. For a production cron, consider pointing `GROQ_MODEL` at a
-non-preview/production model instead once you've confirmed script quality.
+**Note on `GROQ_MODEL` and rate limits:** the current default (`qwen/qwen3.8-27b`) has
+a free/on-demand tier limit of 1,000 Output Tokens Per Minute (OTPM). The script writer
+defaults `GROQ_MAX_TOKENS=600` (and retries on rate limits) to guarantee completions
+stay under this limit. For YouTube Shorts (6-8 sentences), ~300 output tokens is typical.
 
 Step-by-step walkthrough for Pixabay + YouTube OAuth (including why YouTube
 can't skip Google's consent screen, and how to avoid the 7-day-refresh-token

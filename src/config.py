@@ -35,6 +35,7 @@ class Config:
     groq_model: str
     enable_music: bool
     music_volume: float
+    groq_max_tokens: int = 600
 
     @classmethod
     def load(cls) -> "Config":
@@ -54,4 +55,5 @@ class Config:
             groq_model=os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b"),
             enable_music=os.environ.get("ENABLE_MUSIC", "true").lower() == "true",
             music_volume=float(os.environ.get("MUSIC_VOLUME", "0.15")),
+            groq_max_tokens=int(os.environ.get("GROQ_MAX_TOKENS", "600")),
         )
