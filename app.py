@@ -24,6 +24,13 @@ _state = {"running": False, "last_result": None, "last_error": None, "started_at
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 STATE_FILE = DATA_DIR / "run_state.json"
 
+# A run that has been "in progress" longer than this is treated as dead. The
+# job runs in a daemon thread inside this process, so if it is killed (Railway
+# OOM, container restart, a deploy landing mid-run) the `finally` in _run_job
+# never executes and `running: true` is left on disk forever -- which made
+# every later /run return 409 busy. Nothing recovered from that on its own.
+STALE_AFTER_SECONDS = float(os.environ.get("RUN_STALE_AFTER_SECONDS", "1800"))
+
 
 def _save_state() -> None:
     try:
@@ -40,6 +47,47 @@ def _load_state() -> dict:
         except Exception:
             log.exception("Failed to read state from %s", STATE_FILE)
     return dict(_state)
+
+
+def _is_stale(state: dict) -> bool:
+    """True if `state` claims a run is in progress but it cannot still be alive."""
+    if not state.get("running"):
+        return False
+    started_at = state.get("started_at")
+    if not started_at:
+        # Running with no start time: unrecoverable by timeout, so treat as dead.
+        return True
+    return (time.time() - float(started_at)) > STALE_AFTER_SECONDS
+
+
+def _reclaim_stale_lock() -> None:
+    """Clear a `running` flag left behind by a process that died mid-run.
+
+    Called at startup and before each /run. At startup any `running: true` on
+    disk is by definition stale -- the only thing that could have set it was a
+    thread in a previous process. This assumes a single instance, which the
+    in-memory state above already assumes.
+    """
+    disk_state = _load_state()
+    if not disk_state.get("running"):
+        return
+
+    age = None
+    if disk_state.get("started_at"):
+        age = time.time() - float(disk_state["started_at"])
+    log.warning(
+        "Found an abandoned run on disk (started_at=%s, age=%s). The process that "
+        "started it is gone, so clearing the lock.",
+        disk_state.get("started_at"),
+        f"{age:.0f}s" if age is not None else "unknown",
+    )
+    _state.update(
+        running=False,
+        last_result=disk_state.get("last_result"),
+        last_error="previous run did not finish (process died mid-run); lock cleared",
+        started_at=disk_state.get("started_at"),
+    )
+    _save_state()
 
 
 def _run_job() -> None:
@@ -59,7 +107,10 @@ def _run_job() -> None:
 
 @app.get("/health")
 def health():
-    return jsonify(status="ok", running=_state["running"]), 200
+    # Read disk, like /status, so the two endpoints cannot disagree about
+    # whether a run is in flight.
+    disk_state = _load_state()
+    return jsonify(status="ok", running=bool(disk_state.get("running"))), 200
 
 
 @app.get("/status")
@@ -70,7 +121,7 @@ def status():
     # exists on disk (or vice versa). Disk is the source of truth when it's
     # newer than what's in memory.
     disk_state = _load_state()
-    return jsonify(**disk_state), 200
+    return jsonify(**disk_state, stale=_is_stale(disk_state)), 200
 
 
 def _check_auth() -> tuple[bool, str]:
@@ -94,9 +145,32 @@ def run():
         return jsonify(status="busy", message="a run is already in progress"), 409
 
     try:
+        force = request.args.get("force", "").lower() in ("1", "true", "yes")
         disk_state = _load_state()
+
+        if force or _is_stale(disk_state):
+            _reclaim_stale_lock()
+            disk_state = _load_state()
+
         if disk_state.get("running") or _state["running"]:
-            return jsonify(status="busy", message="a run is already in progress"), 409
+            started_at = disk_state.get("started_at") or _state.get("started_at")
+            age = f"{time.time() - float(started_at):.0f}s" if started_at else "unknown"
+            log.warning(
+                "Rejecting /run: a run is already in progress (age=%s). It will be "
+                "reclaimed automatically once it passes %.0fs, or call /run?force=true.",
+                age,
+                STALE_AFTER_SECONDS,
+            )
+            return (
+                jsonify(
+                    status="busy",
+                    message="a run is already in progress",
+                    started_at=started_at,
+                    age_seconds=(time.time() - float(started_at)) if started_at else None,
+                    hint="retry with ?force=true if the previous run died",
+                ),
+                409,
+            )
         _state.update(running=True, last_result=None, last_error=None, started_at=time.time())
         _save_state()
     finally:
@@ -128,6 +202,11 @@ def dry_run():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
+
+    # A `running: true` on disk at startup can only have come from a process
+    # that no longer exists, so clear it before accepting any traffic.
+    _reclaim_stale_lock()
+
     from waitress import serve
 
     serve(app, host="0.0.0.0", port=port, threads=4)

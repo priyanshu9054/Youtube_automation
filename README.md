@@ -5,8 +5,9 @@ voiceover (edge-tts, free) → stock footage (Pixabay if configured, else free
 Mixkit scraping, else a plain color background as last resort) → background
 music (free Mixkit tracks, mood picked by the script writer to match that
 video's specific topic) → rendered vertical video (ffmpeg) → upload (YouTube
-Data API v3, single `youtube.upload` scope) — runs as a single Railway
-**Cron Service**.
+Data API v3, single `youtube.upload` scope) — runs as a single always-on
+Railway **web service** with an authenticated HTTP trigger (`POST /run`) that
+an external scheduler calls daily. See [section 4](#4-deploy-to-railway).
 
 ## 1. Credentials you need
 
@@ -62,32 +63,69 @@ Check `output/` for the rendered file before you ever flip uploads to public.
 
 ## 4. Deploy to Railway
 
-This app is a single batch job (generate one video, upload it, exit) — on
-Railway that maps to **one service of type Cron**, not a long-running web
-service. `railway.toml` already has the right `[build]`/`[deploy]` block
-(`Dockerfile` builder, `startCommand = "python main.py --upload"`,
-`restartPolicyType = "NEVER"` since a cron run should finish and stop, not
-restart in a crash loop).
+This runs as a **normal always-on web service**, *not* a Railway Cron
+Service. It exposes a small authenticated HTTP trigger (`POST /run`) that an
+external scheduler calls once a day. `railway.toml` already carries the right
+config (`Dockerfile` builder, `startCommand = "python app.py"`,
+`healthcheckPath = "/health"`, `restartPolicyType = "ON_FAILURE"`).
+
+> **If the scheduler keeps failing, check this first.** A **Cron Schedule** set
+> in *Settings → Cron Schedule* only boots the container for that one window
+> and stops it again, so `/run` is unreachable for the rest of the day and
+> every scheduled call fails to connect. The service must have **no cron
+> schedule set**. (Earlier versions of this app were a Cron Service with
+> `startCommand = "python main.py --upload"`; if you deployed from those
+> instructions, clear the schedule.)
 
 1. `railway login`, then `railway init` in this directory (or connect the
    GitHub repo from the Railway dashboard instead — either works, since
    `railway.toml` carries the config).
-2. In the Railway dashboard, open the service's **Settings → Cron Schedule**
-   and set it, e.g. `0 15 * * *` for once daily at 15:00 UTC. (Minimum
-   granularity is 1 minute; don't go more than a few times a day — see the
-   content-policy note below.)
+2. Confirm *Settings → Cron Schedule* is **empty**, and that the service is
+   not sleeping (a service that sleeps on inactivity will not answer `/run`).
 3. **Project → Variables**: paste in every value from your local `.env`
    (`GROQ_API_KEY`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`, `PIXABAY_API_KEY`
    if you have one, `CHANNEL_NICHE`, etc). Set `AUTO_UPLOAD=true` only once
-   you've reviewed a few local renders and trust the output.
+   you've reviewed a few local renders and trust the output. Also set
+   `RUN_TOKEN` to a long random string — `/run` and `/dry-run` return `500`
+   until it exists, and `401` unless the caller sends
+   `Authorization: Bearer $RUN_TOKEN`.
 4. Attach a **volume** mounted at `/app/data` to the service. Topic-dedup
-   history (`data/posted_topics.json`) is written inside the container,
-   which is otherwise wiped between cron runs — without the volume, the
-   script writer won't remember what topics it already covered, and you'll
-   get more repeats.
-5. Trigger one manual run from the dashboard ("Deploy" / "Run now") before
-   trusting the schedule, and check Railway's logs for the `Uploaded
-   successfully: https://youtu.be/...` line.
+   history (`data/posted_topics.json`) is written inside the container, which
+   is otherwise wiped on every restart — without the volume, the script writer
+   won't remember what topics it already covered, and you'll get more repeats.
+5. Verify the deploy end to end, in this order:
+
+   ```sh
+   curl -s https://<your-service>.up.railway.app/health
+   # -> {"running":false,"status":"ok"}
+
+   curl -s -X POST -H "Authorization: Bearer $RUN_TOKEN" \
+     https://<your-service>.up.railway.app/dry-run
+   # synchronous, no upload; returns the full error if the pipeline is broken
+
+   curl -s -X POST -H "Authorization: Bearer $RUN_TOKEN" \
+     https://<your-service>.up.railway.app/run
+   # -> {"status":"started"}, then poll /status
+   ```
+
+   `/dry-run` is the one to reach for when debugging: it runs the whole
+   pipeline synchronously and returns the real exception in the response body,
+   instead of a background thread whose failure you have to go read the logs
+   for.
+
+### Scheduler troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Connection refused / timeout | A Cron Schedule is set, or the service sleeps | Clear the schedule; keep the service always-on |
+| `500 RUN_TOKEN is not configured` | `RUN_TOKEN` missing in Railway | Set it in *Variables* |
+| `401 unauthorized` | Caller's token doesn't match | Resend as `Authorization: Bearer $RUN_TOKEN` |
+| `409 busy` every day | A previous run was killed (OOM, restart, deploy mid-run) and left `running: true` on the volume | Self-heals now: cleared at startup and after `RUN_STALE_AFTER_SECONDS` (default 1800). To clear immediately: `POST /run?force=true` |
+| Runs start but never finish | Render OOM-killed on a small instance | Check `/status` for `last_error`; raise the instance memory |
+
+`GET /status` reports `running`, `last_result`, `last_error` and `stale`. A
+`stale: true` means a lock is being held by a run that is already gone — the
+next `/run` will reclaim it rather than refusing.
 
 ## 5. Content policy — read before turning on `AUTO_UPLOAD`
 
