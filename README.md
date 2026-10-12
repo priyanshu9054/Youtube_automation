@@ -97,7 +97,8 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
 
    ```sh
    curl -s https://<your-service>.up.railway.app/health
-   # -> {"running":false,"status":"ok"}
+   # -> {"run_token_configured":true,"running":false,"status":"ok"}
+   # run_token_configured MUST be true, or /run rejects every call with 500
 
    curl -s -X POST -H "Authorization: Bearer $RUN_TOKEN" \
      https://<your-service>.up.railway.app/dry-run
@@ -118,7 +119,7 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
 | Symptom | Cause | Fix |
 |---|---|---|
 | Connection refused / timeout | A Cron Schedule is set, or the service sleeps | Clear the schedule; keep the service always-on |
-| `500 RUN_TOKEN is not configured` | `RUN_TOKEN` missing in Railway | Set it in *Variables* |
+| `500 RUN_TOKEN is not configured` | `RUN_TOKEN` missing in Railway — **check this first**, it rejects every call and no video is ever made | Set it in *Variables*. `GET /health` reports `run_token_configured`, and the startup log warns about it |
 | `401 unauthorized` | Caller's token doesn't match | Resend as `Authorization: Bearer $RUN_TOKEN` |
 | `409 busy` every day | A previous run was killed (OOM, restart, deploy mid-run) and left `running: true` on the volume | Self-heals now: cleared at startup and after `RUN_STALE_AFTER_SECONDS` (default 1800). To clear immediately: `POST /run?force=true` |
 | Runs start but never finish | Render OOM-killed on a small instance | Check `/status` for `last_error`; raise the instance memory |

@@ -110,7 +110,18 @@ def health():
     # Read disk, like /status, so the two endpoints cannot disagree about
     # whether a run is in flight.
     disk_state = _load_state()
-    return jsonify(status="ok", running=bool(disk_state.get("running"))), 200
+    # run_token_configured makes a missing RUN_TOKEN visible from an
+    # unauthenticated probe. Without it, the only symptom is every /run
+    # returning 500, which reads like a server fault rather than a config
+    # gap -- that cost real time to find. It reveals nothing about the value.
+    return (
+        jsonify(
+            status="ok",
+            running=bool(disk_state.get("running")),
+            run_token_configured=bool(os.environ.get("RUN_TOKEN")),
+        ),
+        200,
+    )
 
 
 @app.get("/status")
@@ -206,6 +217,16 @@ if __name__ == "__main__":
     # A `running: true` on disk at startup can only have come from a process
     # that no longer exists, so clear it before accepting any traffic.
     _reclaim_stale_lock()
+
+    if not os.environ.get("RUN_TOKEN"):
+        log.warning(
+            "RUN_TOKEN is not set, so /run and /dry-run will reject EVERY call "
+            "with 500 and no video will ever be generated. Set RUN_TOKEN in the "
+            "Railway service variables to a long random string, and send it from "
+            "the scheduler as 'Authorization: Bearer <token>'."
+        )
+    else:
+        log.info("RUN_TOKEN is configured; /run is ready for the scheduler.")
 
     from waitress import serve
 
