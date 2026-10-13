@@ -1,7 +1,7 @@
 # YouTube Shorts Automation
 
 Generates one faceless YouTube Short end-to-end — topic → script (Groq) →
-voiceover (edge-tts, free) → stock footage (Pixabay if configured, else free
+voiceover (Piper, free + fully local) → stock footage (Pixabay if configured, else free
 Mixkit scraping, else a plain color background as last resort) → background
 music (free Mixkit tracks, mood picked by the script writer to match that
 video's specific topic) → rendered vertical video (ffmpeg) → upload (YouTube
@@ -135,9 +135,10 @@ the right side of that:
 - Use one real, verified channel/account. Don't run multiple accounts to
   multiply output — that's a distinct, bannable TOS violation.
 - `TTS_VOICE` / `TTS_RATE` / `TTS_PITCH` control narration. The default is
-  `en-US-ChristopherNeural` at `-12%` / `-15Hz` — a deep, heavy, deliberate
-  read suited to the Stoic/philosophy niche. Alternatives: `en-US-GuyNeural`
-  (more intense), `en-GB-ThomasNeural` (British gravitas). Lowering `TTS_PITCH`
+  the Piper voice `en_US-ryan-medium` at `-12%` / `-15Hz` — a deep, heavy,
+  deliberate read suited to the Stoic/philosophy niche. Other male voices in
+  `rhasspy/piper-voices`: `en_US-joe-medium`, `en_US-norman-medium`,
+  `en_US-john-medium`. Lowering `TTS_PITCH`
   darkens the tone further, but `-15Hz` is the practical floor before it starts
   to sound synthetic.
 - `UPLOAD_PRIVACY_STATUS=public` publishes uploads immediately; set it to
@@ -153,7 +154,7 @@ the right side of that:
 main.py                     CLI entrypoint
 src/config.py                Loads/validates env vars
 src/script_writer.py         Groq call -> title/description/tags/sentences
-src/voice.py                 edge-tts synthesis per sentence
+src/voice.py                 Piper synthesis per sentence (local, no API)
 src/footage.py                Pixabay search (if keyed) -> Mixkit fallback -> color-card fallback
 src/music.py                   Mixkit mood-matched background music search
 src/render.py                 ffmpeg: normalize clips, concat, mix music under voice, burn captions
