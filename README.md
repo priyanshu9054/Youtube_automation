@@ -85,10 +85,7 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
 3. **Project → Variables**: paste in every value from your local `.env`
    (`GROQ_API_KEY`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`, `PIXABAY_API_KEY`
    if you have one, `CHANNEL_NICHE`, etc). Set `AUTO_UPLOAD=true` only once
-   you've reviewed a few local renders and trust the output. Also set
-   `RUN_TOKEN` to a long random string — `/run` and `/dry-run` return `500`
-   until it exists, and `401` unless the caller sends
-   `Authorization: Bearer $RUN_TOKEN`.
+   you've reviewed a few local renders and trust the output.
 4. Attach a **volume** mounted at `/app/data` to the service. Topic-dedup
    history (`data/posted_topics.json`) is written inside the container, which
    is otherwise wiped on every restart — without the volume, the script writer
@@ -97,15 +94,12 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
 
    ```sh
    curl -s https://<your-service>.up.railway.app/health
-   # -> {"run_token_configured":true,"running":false,"status":"ok"}
-   # run_token_configured MUST be true, or /run rejects every call with 500
+   # -> {"running":false,"status":"ok"}
 
-   curl -s -X POST -H "Authorization: Bearer $RUN_TOKEN" \
-     https://<your-service>.up.railway.app/dry-run
+   curl -s -X POST https://<your-service>.up.railway.app/dry-run
    # synchronous, no upload; returns the full error if the pipeline is broken
 
-   curl -s -X POST -H "Authorization: Bearer $RUN_TOKEN" \
-     https://<your-service>.up.railway.app/run
+   curl -s -X POST https://<your-service>.up.railway.app/run
    # -> {"status":"started"}, then poll /status
    ```
 
@@ -119,8 +113,6 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
 | Symptom | Cause | Fix |
 |---|---|---|
 | Connection refused / timeout | A Cron Schedule is set, or the service sleeps | Clear the schedule; keep the service always-on |
-| `500 RUN_TOKEN is not configured` | `RUN_TOKEN` missing in Railway — **check this first**, it rejects every call and no video is ever made | Set it in *Variables*. `GET /health` reports `run_token_configured`, and the startup log warns about it |
-| `401 unauthorized` | Caller's token doesn't match | Resend as `Authorization: Bearer $RUN_TOKEN` |
 | `409 busy` every day | A previous run was killed (OOM, restart, deploy mid-run) and left `running: true` on the volume | Self-heals now: cleared at startup and after `RUN_STALE_AFTER_SECONDS` (default 1800). To clear immediately: `POST /run?force=true` |
 | Runs start but never finish | Render OOM-killed on a small instance | Check `/status` for `last_error`; raise the instance memory |
 

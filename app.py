@@ -110,18 +110,7 @@ def health():
     # Read disk, like /status, so the two endpoints cannot disagree about
     # whether a run is in flight.
     disk_state = _load_state()
-    # run_token_configured makes a missing RUN_TOKEN visible from an
-    # unauthenticated probe. Without it, the only symptom is every /run
-    # returning 500, which reads like a server fault rather than a config
-    # gap -- that cost real time to find. It reveals nothing about the value.
-    return (
-        jsonify(
-            status="ok",
-            running=bool(disk_state.get("running")),
-            run_token_configured=bool(os.environ.get("RUN_TOKEN")),
-        ),
-        200,
-    )
+    return jsonify(status="ok", running=bool(disk_state.get("running"))), 200
 
 
 @app.get("/status")
@@ -135,23 +124,8 @@ def status():
     return jsonify(**disk_state, stale=_is_stale(disk_state)), 200
 
 
-def _check_auth() -> tuple[bool, str]:
-    expected_token = os.environ.get("RUN_TOKEN")
-    if not expected_token:
-        return False, "RUN_TOKEN is not configured on the server"
-    auth_header = request.headers.get("Authorization", "")
-    provided = auth_header.removeprefix("Bearer ").strip()
-    if provided != expected_token:
-        return False, "unauthorized"
-    return True, ""
-
-
 @app.post("/run")
 def run():
-    ok, err = _check_auth()
-    if not ok:
-        return jsonify(error=err), (401 if err == "unauthorized" else 500)
-
     if not _lock.acquire(blocking=False):
         return jsonify(status="busy", message="a run is already in progress"), 409
 
@@ -198,10 +172,6 @@ def dry_run():
     state to go stale -- the full result (success or failure) comes back in
     this same HTTP response. Use this to verify the pipeline works at all,
     independent of whatever is going on with /run + /status."""
-    ok, err = _check_auth()
-    if not ok:
-        return jsonify(error=err), (401 if err == "unauthorized" else 500)
-
     try:
         cfg = Config.load()
         out_path = run_once(cfg, Path("output"), upload=False)
@@ -217,16 +187,6 @@ if __name__ == "__main__":
     # A `running: true` on disk at startup can only have come from a process
     # that no longer exists, so clear it before accepting any traffic.
     _reclaim_stale_lock()
-
-    if not os.environ.get("RUN_TOKEN"):
-        log.warning(
-            "RUN_TOKEN is not set, so /run and /dry-run will reject EVERY call "
-            "with 500 and no video will ever be generated. Set RUN_TOKEN in the "
-            "Railway service variables to a long random string, and send it from "
-            "the scheduler as 'Authorization: Bearer <token>'."
-        )
-    else:
-        log.info("RUN_TOKEN is configured; /run is ready for the scheduler.")
 
     from waitress import serve
 
