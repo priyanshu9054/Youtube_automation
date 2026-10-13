@@ -116,9 +116,21 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
 | `409 busy` every day | A previous run was killed (OOM, restart, deploy mid-run) and left `running: true` on the volume | Self-heals now: cleared at startup and after `RUN_STALE_AFTER_SECONDS` (default 1800). To clear immediately: `POST /run?force=true` |
 | Runs start but never finish | Render OOM-killed on a small instance | Check `/status` for `last_error`; raise the instance memory |
 
-`GET /status` reports `running`, `last_result`, `last_error` and `stale`. A
-`stale: true` means a lock is being held by a run that is already gone — the
-next `/run` will reclaim it rather than refusing.
+`GET /status` reports `running`, `last_result`, `last_error`, `stale`,
+`uploaded`, `video_url` and `upload_skipped_reason`. A `stale: true` means a
+lock is being held by a run that is already gone — the next `/run` will reclaim
+it rather than refusing.
+
+**`uploaded` is the field that matters.** `last_result` is set whenever a video
+renders, whether or not it was published, so it never proved an upload happened —
+a run with `AUTO_UPLOAD` off looked identical to a successful one. Check
+`uploaded: true` and a non-null `video_url`; if `uploaded` is false,
+`upload_skipped_reason` says why.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `uploaded: false`, `upload_skipped_reason` set | `AUTO_UPLOAD` is not `true` in the Railway variables | Set it. Renders still happen without it; uploads don't |
+| `last_error` mentions `invalid_grant` | `YOUTUBE_REFRESH_TOKEN` expired — Google kills refresh tokens after 7 days while the OAuth consent screen is in *Testing* | Re-mint with `scripts/authorize_youtube.py`, paste into the **Railway** variables (not just `.env`), and publish the OAuth app to stop it recurring |
 
 ## 5. Content policy — read before turning on `AUTO_UPLOAD`
 

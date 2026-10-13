@@ -19,7 +19,18 @@ _lock = threading.Lock()
 # In-memory state (fast path, correct as long as this one process handles both
 # the /run call and the later /status call). Mirrored to disk below so status
 # survives a process restart too, as long as DATA_DIR is a persistent volume.
-_state = {"running": False, "last_result": None, "last_error": None, "started_at": None}
+# `uploaded` is deliberately separate from `last_result`: a render-only run and
+# a published run produce the same file path, so the path alone never proved an
+# upload happened. That ambiguity hid a skipped upload for over a week.
+_state = {
+    "running": False,
+    "last_result": None,
+    "last_error": None,
+    "started_at": None,
+    "uploaded": False,
+    "video_url": None,
+    "upload_skipped_reason": None,
+}
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 STATE_FILE = DATA_DIR / "run_state.json"
@@ -93,12 +104,24 @@ def _reclaim_stale_lock() -> None:
 def _run_job() -> None:
     try:
         cfg = Config.load()
-        out_path = run_once(cfg, Path("output"), upload=cfg.auto_upload)
-        _state["last_result"] = str(out_path)
+        result = run_once(cfg, Path("output"), upload=cfg.auto_upload)
+        _state["last_result"] = str(result.video_path)
         _state["last_error"] = None
-        log.info("Scheduled job finished: %s", out_path)
+        _state["uploaded"] = result.uploaded
+        _state["video_url"] = result.video_url
+        _state["upload_skipped_reason"] = result.upload_skipped_reason
+        if result.uploaded:
+            log.info("Scheduled job finished and published: %s", result.video_url)
+        else:
+            log.warning(
+                "Scheduled job rendered but did NOT publish (%s): %s",
+                result.upload_skipped_reason,
+                result.video_path,
+            )
     except Exception as e:
         _state["last_error"] = str(e)
+        _state["uploaded"] = False
+        _state["video_url"] = None
         log.exception("Scheduled job failed")
     finally:
         _state["running"] = False
@@ -156,7 +179,15 @@ def run():
                 ),
                 409,
             )
-        _state.update(running=True, last_result=None, last_error=None, started_at=time.time())
+        _state.update(
+            running=True,
+            last_result=None,
+            last_error=None,
+            started_at=time.time(),
+            uploaded=False,
+            video_url=None,
+            upload_skipped_reason=None,
+        )
         _save_state()
     finally:
         _lock.release()
@@ -174,8 +205,8 @@ def dry_run():
     independent of whatever is going on with /run + /status."""
     try:
         cfg = Config.load()
-        out_path = run_once(cfg, Path("output"), upload=False)
-        return jsonify(status="ok", result=str(out_path)), 200
+        result = run_once(cfg, Path("output"), upload=False)
+        return jsonify(status="ok", result=str(result.video_path), uploaded=False), 200
     except Exception as e:
         log.exception("Dry run failed")
         return jsonify(status="error", error=str(e)), 500
