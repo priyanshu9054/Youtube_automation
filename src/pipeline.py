@@ -14,7 +14,7 @@ from src.music import download_music, find_music_url
 from src.render import Segment, render_video
 from src.script_writer import generate_script
 from src.uploader import upload_short
-from src.voice import synthesize_sentence
+from src.voice import synthesize_sentences
 from src.youtube_client import build_youtube_client
 
 log = logging.getLogger("pipeline")
@@ -64,18 +64,19 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
         tmp_path = Path(tmp)
         segments = []
 
-        for i, sentence in enumerate(script.sentences):
-            log.info("Synthesizing voice for sentence %d/%d", i + 1, len(script.sentences))
-            audio_path = tmp_path / f"voice_{i:03d}.mp3"
-            voice_clip = synthesize_sentence(
-                sentence.text,
-                cfg.tts_voice,
-                audio_path,
-                rate=cfg.tts_rate,
-                pitch=cfg.tts_pitch,
-                sentence_silence=cfg.tts_sentence_silence,
-            )
+        # All sentences in one piper process: the model is loaded once rather
+        # than once per sentence, which dominated both runtime and peak memory.
+        log.info("Synthesizing voiceover for %d sentences...", len(script.sentences))
+        voice_clips = synthesize_sentences(
+            [s.text for s in script.sentences],
+            cfg.tts_voice,
+            tmp_path,
+            rate=cfg.tts_rate,
+            pitch=cfg.tts_pitch,
+            sentence_silence=cfg.tts_sentence_silence,
+        )
 
+        for i, (sentence, voice_clip) in enumerate(zip(script.sentences, voice_clips)):
             raw_clip_path = tmp_path / f"raw_{i:03d}.mp4"
             log.info(
                 "Finding footage %d/%d for: %s",
@@ -97,7 +98,7 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
             segments.append(
                 Segment(
                     clip_path=raw_clip_path,
-                    audio_path=audio_path,
+                    audio_path=voice_clip.audio_path,
                     text=sentence.text,
                     duration=voice_clip.duration_seconds,
                 )

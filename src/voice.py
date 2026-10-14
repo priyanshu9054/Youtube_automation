@@ -218,3 +218,86 @@ def synthesize_sentence(
     finally:
         wav_path.unlink(missing_ok=True)
     return VoiceClip(audio_path=out_path, duration_seconds=_audio_duration(out_path))
+
+
+def _synthesize_batch_wavs(
+    texts: list[str], model: Path, out_dir: Path, length_scale: float, sentence_silence: float
+) -> list[Path]:
+    """Synthesize every sentence in ONE piper process.
+
+    Piper reads one line of stdin per utterance and writes one wav per line, so
+    the 60MB model is loaded once instead of once per sentence. That reload was
+    costing about 21s per sentence on the deployed instance -- roughly two
+    minutes of a run -- and each process peaked near 200MB, which is the leading
+    suspect for the container being killed mid-run.
+
+    Paths come from piper's own "Wrote <path>" log lines, which are emitted in
+    input order, rather than from sorting timestamped filenames.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # One line per sentence is the contract; an embedded newline would silently
+    # split one sentence into two utterances and desynchronise every clip.
+    payload = "\n".join(t.replace("\n", " ").replace("\r", " ").strip() for t in texts)
+
+    cmd = [
+        sys.executable, "-m", "piper",
+        "--model", str(model),
+        "--output-dir", str(out_dir),
+        "--output-dir-naming", "timestamp",
+        "--length-scale", f"{length_scale:.3f}",
+        "--sentence-silence", f"{max(0.0, sentence_silence):.2f}",
+    ]
+    result = subprocess.run(cmd, input=payload, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"piper batch failed (exit {result.returncode}): "
+            f"{(result.stderr or '').strip()[-500:] or 'no stderr'}"
+        )
+
+    written = re.findall(r"Wrote (.+\.wav)", result.stderr or "")
+    paths = [Path(p.strip()) for p in written]
+    if len(paths) != len(texts) or not all(p.exists() for p in paths):
+        raise RuntimeError(
+            f"piper batch wrote {len(paths)} files for {len(texts)} sentences"
+        )
+    return paths
+
+
+def synthesize_sentences(
+    texts: list[str],
+    voice: str,
+    out_dir: Path,
+    rate: str = "-12%",
+    pitch: str = "-15Hz",
+    sentence_silence: float = 0.4,
+) -> list[VoiceClip]:
+    """Synthesize all sentences at once, falling back to one-at-a-time.
+
+    The batch path is a large speed and memory win but depends on piper's
+    stdout contract; if that ever changes, a slow run beats a broken one.
+    """
+    model = _resolve_model(voice)
+    ratio = _pitch_ratio(pitch)
+
+    try:
+        wavs = _synthesize_batch_wavs(
+            texts, model, out_dir / "piper", _length_scale(rate), sentence_silence
+        )
+    except Exception as e:
+        log.warning("Batch synthesis failed (%s); falling back to per-sentence.", e)
+        clips = []
+        for i, text in enumerate(texts):
+            clips.append(
+                synthesize_sentence(
+                    text, voice, out_dir / f"voice_{i:03d}.mp3", rate, pitch, sentence_silence
+                )
+            )
+        return clips
+
+    clips = []
+    for i, wav in enumerate(wavs):
+        mp3 = out_dir / f"voice_{i:03d}.mp3"
+        _to_mp3(wav, mp3, ratio)
+        wav.unlink(missing_ok=True)
+        clips.append(VoiceClip(audio_path=mp3, duration_seconds=_audio_duration(mp3)))
+    return clips
