@@ -1,8 +1,11 @@
 import logging
+import os
 import random
 import re
 import shutil
 import subprocess
+import time
+import urllib.parse
 from pathlib import Path
 
 import requests
@@ -11,6 +14,15 @@ log = logging.getLogger("footage")
 
 PEXELS_VIDEOS_URL = "https://api.pexels.com/videos/search"
 PIXABAY_VIDEOS_URL = "https://pixabay.com/api/videos/"
+POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
+
+# Appended to every generated image so six separate shots still look like one
+# video. "no text" matters: stock-style prompts otherwise come back with
+# invented captions burned into the frame.
+AI_STYLE_SUFFIX = (
+    "cinematic still, moody dramatic lighting, shallow depth of field, "
+    "muted earthy tones, film grain, vertical composition, no text, no words"
+)
 
 # Curated sleek background color pairs for vertical shorts when footage is unavailable
 FALLBACK_PALETTES = [
@@ -254,3 +266,143 @@ def download_clip(url: str, out_path: Path) -> Path:
         for chunk in resp.iter_content(chunk_size=1 << 16):
             f.write(chunk)
     return out_path
+
+
+def _ai_image(query: str, out_path: Path, token: str = "") -> Path:
+    """Generate an image for `query` with Pollinations. No API key required.
+
+    This is the only source that is relevant by construction: the picture is
+    made from the sentence's own keywords rather than searched for among clips
+    that happen to exist. Anonymous requests are watermarked and rate limited to
+    roughly one every 15 seconds; POLLINATIONS_TOKEN (a free account, no
+    payment) removes both.
+    """
+    prompt = urllib.parse.quote(f"{query}, {AI_STYLE_SUFFIX}")
+    # "sana" is the free model. The default and "flux" both answer 402 Payment
+    # Required on the anonymous tier, so the model is named explicitly.
+    params = {
+        "width": 1080,
+        "height": 1920,
+        "nologo": "true",
+        "model": os.environ.get("POLLINATIONS_MODEL", "sana"),
+    }
+    if token:
+        params["token"] = token
+
+    last_error = None
+    for attempt in range(4):
+        try:
+            resp = requests.get(
+                f"{POLLINATIONS_URL}{prompt}",
+                params=params,
+                timeout=180,
+                headers={"User-Agent": "youtube-automation/1.0"},
+            )
+            if resp.status_code == 429:
+                # Anonymous tier allows ~1 request per 15s; back off rather than
+                # dropping the sentence to an unrelated clip.
+                wait = 15 * (attempt + 1)
+                log.info("Pollinations rate limited; waiting %ss", wait)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            if not resp.content or not resp.headers.get("content-type", "").startswith("image/"):
+                raise RuntimeError(f"unexpected content-type {resp.headers.get('content-type')!r}")
+            out_path.write_bytes(resp.content)
+            return out_path
+        except Exception as e:
+            last_error = e
+            log.warning("Pollinations attempt %d failed for %r: %s", attempt + 1, query, e)
+            time.sleep(3)
+
+    raise RuntimeError(f"Could not generate an image for {query!r}: {last_error}")
+
+
+def _ken_burns(image_path: Path, duration: float, out_path: Path, index: int = 0) -> Path:
+    """Turn a still into a slow push-in so the frame is never static.
+
+    Scaled up before zoompan because zoompan samples from the source frame --
+    zooming a 1080-wide still directly produces visible stepping as the crop
+    window moves by whole pixels.
+    """
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+    frames = max(1, int(duration * 30))
+    # Alternate push-in and pull-out so consecutive shots don't feel identical.
+    if index % 2 == 0:
+        zoom_expr = "min(zoom+0.0008,1.18)"
+    else:
+        zoom_expr = "if(lte(zoom,1.0),1.18,max(1.001,zoom-0.0008))"
+
+    result = subprocess.run(
+        [
+            ffmpeg_bin, "-y", "-loop", "1", "-i", str(image_path), "-t", f"{duration:.3f}",
+            "-vf",
+            "scale=2160:3840:force_original_aspect_ratio=increase,crop=2160:3840,"
+            f"zoompan=z='{zoom_expr}':d={frames}:"
+            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30,format=yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            str(out_path),
+        ],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not out_path.exists():
+        raise RuntimeError(f"ffmpeg ken-burns failed: {(result.stderr or '')[-400:]}")
+    return out_path
+
+
+def acquire_clip(
+    query: str,
+    out_path: Path,
+    duration: float,
+    *,
+    pexels_api_key: str = "",
+    pixabay_api_key: str = "",
+    pollinations_token: str = "",
+    prefer_ai: bool = False,
+    index: int = 0,
+) -> str:
+    """Put a clip for `query` at `out_path`. Returns a label for the source used.
+
+    Order: real stock video when a key exists, then an AI-generated image given
+    motion, then an arbitrary clip, then a plain colour card. prefer_ai moves
+    generation to the front, which trades real footage for exact relevance.
+    """
+    work_dir = out_path.parent
+
+    def _stock() -> str | None:
+        if pexels_api_key:
+            link = _fetch_pexels_clip(query, pexels_api_key, duration)
+            if link:
+                download_clip(link, out_path)
+                return "pexels"
+        if pixabay_api_key:
+            link = _fetch_pixabay_clip(query, pixabay_api_key, duration)
+            if link:
+                download_clip(link, out_path)
+                return "pixabay"
+        return None
+
+    def _ai() -> str | None:
+        try:
+            img = _ai_image(query, work_dir / f"ai_{index:03d}.jpg", pollinations_token)
+            _ken_burns(img, duration, out_path, index)
+            return "pollinations"
+        except Exception as e:
+            log.warning("AI image generation failed for %r: %s", query, e)
+            return None
+
+    order = [_ai, _stock] if prefer_ai else [_stock, _ai]
+    for step in order:
+        source = step()
+        if source:
+            log.info("Footage for %r from %s", query, source)
+            return source
+
+    try:
+        log.warning("No relevant footage for %r; using an arbitrary clip.", query)
+        download_clip(_fetch_unrelated_mixkit_clip(), out_path)
+        return "mixkit-arbitrary"
+    except Exception as e:
+        log.warning("Arbitrary clip failed too (%s); using a colour card.", e)
+        generate_fallback_clip(duration, out_path, index)
+        return "colour-card"

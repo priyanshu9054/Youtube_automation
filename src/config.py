@@ -61,6 +61,11 @@ class Config:
     music_volume: float
     groq_max_tokens: int = 600
     pexels_api_key: str = ""
+    # Free, no signup. Without a token, generated images carry a small
+    # pollinations.ai watermark and are limited to ~1 request per 15s.
+    pollinations_token: str = ""
+    # Generate imagery from the script instead of searching stock for it.
+    prefer_ai_footage: bool = False
     # Silence appended after each sentence. The main lever for a calmer read:
     # sentences otherwise butt straight together, since each one is synthesised
     # and rendered as its own segment.
@@ -88,5 +93,7 @@ class Config:
             music_volume=float(os.environ.get("MUSIC_VOLUME", "0.15")),
             groq_max_tokens=int(os.environ.get("GROQ_MAX_TOKENS", "600")),
             pexels_api_key=os.environ.get("PEXELS_API_KEY", "").strip(),
+            pollinations_token=os.environ.get("POLLINATIONS_TOKEN", "").strip(),
+            prefer_ai_footage=os.environ.get("PREFER_AI_FOOTAGE", "false").lower() == "true",
             tts_sentence_silence=float(os.environ.get("TTS_SENTENCE_SILENCE", "0.4")),
         )

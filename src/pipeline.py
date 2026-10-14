@@ -8,7 +8,7 @@ from typing import Optional
 from google.auth.exceptions import RefreshError
 
 from src.config import Config
-from src.footage import download_clip, find_clip_url, generate_fallback_clip
+from src.footage import acquire_clip
 from src.history import load_recent_titles, record_title
 from src.music import download_music, find_music_url
 from src.render import Segment, render_video
@@ -77,19 +77,22 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
             )
 
             raw_clip_path = tmp_path / f"raw_{i:03d}.mp4"
-            try:
-                log.info("Finding footage for: %s", sentence.visual_keywords)
-                clip_url = find_clip_url(
-                    sentence.visual_keywords,
-                    cfg.pixabay_api_key,
-                    voice_clip.duration_seconds,
-                    pexels_api_key=cfg.pexels_api_key,
-                )
-                log.info("Downloading footage clip %d/%d: %s", i + 1, len(script.sentences), clip_url)
-                download_clip(clip_url, raw_clip_path)
-            except Exception as e:
-                log.warning("Stock clip fetch failed (%s); generating visual fallback.", e)
-                generate_fallback_clip(voice_clip.duration_seconds, raw_clip_path, i)
+            log.info(
+                "Finding footage %d/%d for: %s",
+                i + 1, len(script.sentences), sentence.visual_keywords,
+            )
+            # acquire_clip degrades internally (stock -> generated -> arbitrary
+            # -> colour card), so a single sentence can never fail the run.
+            acquire_clip(
+                sentence.visual_keywords,
+                raw_clip_path,
+                voice_clip.duration_seconds,
+                pexels_api_key=cfg.pexels_api_key,
+                pixabay_api_key=cfg.pixabay_api_key,
+                pollinations_token=cfg.pollinations_token,
+                prefer_ai=cfg.prefer_ai_footage,
+                index=i,
+            )
 
             segments.append(
                 Segment(
