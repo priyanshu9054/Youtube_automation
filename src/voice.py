@@ -140,7 +140,9 @@ def _pitch_ratio(pitch: str) -> float:
     return _clamp(1.0 + float(m.group(1)) / ASSUMED_F0_HZ, 0.75, 1.35)
 
 
-def _synthesize_wav(text: str, model: Path, wav_path: Path, length_scale: float) -> None:
+def _synthesize_wav(
+    text: str, model: Path, wav_path: Path, length_scale: float, sentence_silence: float
+) -> None:
     """Run the piper CLI as a subprocess.
 
     Piper is GPL-3.0, so it is invoked as a separate process rather than
@@ -156,6 +158,8 @@ def _synthesize_wav(text: str, model: Path, wav_path: Path, length_scale: float)
         str(wav_path),
         "--length-scale",
         f"{length_scale:.3f}",
+        "--sentence-silence",
+        f"{max(0.0, sentence_silence):.2f}",
     ]
     result = subprocess.run(cmd, input=text, capture_output=True, text=True)
     if result.returncode != 0 or not wav_path.exists():
@@ -200,13 +204,16 @@ def synthesize_sentence(
     out_path: Path,
     rate: str = "-12%",
     pitch: str = "-15Hz",
+    sentence_silence: float = 0.4,
 ) -> VoiceClip:
     # Slower than default + a lowered pitch gives the heavier, darker delivery
     # this niche wants — weighted and deliberate rather than announcer-bright.
+    # The trailing silence gives the line room to land instead of running
+    # straight into the next sentence's clip.
     model = _resolve_model(voice)
     wav_path = out_path.with_suffix(".piper.wav")
     try:
-        _synthesize_wav(text, model, wav_path, _length_scale(rate))
+        _synthesize_wav(text, model, wav_path, _length_scale(rate), sentence_silence)
         _to_mp3(wav_path, out_path, _pitch_ratio(pitch))
     finally:
         wav_path.unlink(missing_ok=True)

@@ -73,13 +73,17 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
                 audio_path,
                 rate=cfg.tts_rate,
                 pitch=cfg.tts_pitch,
+                sentence_silence=cfg.tts_sentence_silence,
             )
 
             raw_clip_path = tmp_path / f"raw_{i:03d}.mp4"
             try:
                 log.info("Finding footage for: %s", sentence.visual_keywords)
                 clip_url = find_clip_url(
-                    sentence.visual_keywords, cfg.pixabay_api_key, voice_clip.duration_seconds
+                    sentence.visual_keywords,
+                    cfg.pixabay_api_key,
+                    voice_clip.duration_seconds,
+                    pexels_api_key=cfg.pexels_api_key,
                 )
                 log.info("Downloading footage clip %d/%d: %s", i + 1, len(script.sentences), clip_url)
                 download_clip(clip_url, raw_clip_path)

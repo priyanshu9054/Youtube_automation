@@ -60,6 +60,11 @@ class Config:
     enable_music: bool
     music_volume: float
     groq_max_tokens: int = 600
+    pexels_api_key: str = ""
+    # Silence appended after each sentence. The main lever for a calmer read:
+    # sentences otherwise butt straight together, since each one is synthesised
+    # and rendered as its own segment.
+    tts_sentence_silence: float = 0.4
 
     @classmethod
     def load(cls) -> "Config":
@@ -82,4 +87,6 @@ class Config:
             enable_music=os.environ.get("ENABLE_MUSIC", "true").lower() == "true",
             music_volume=float(os.environ.get("MUSIC_VOLUME", "0.15")),
             groq_max_tokens=int(os.environ.get("GROQ_MAX_TOKENS", "600")),
+            pexels_api_key=os.environ.get("PEXELS_API_KEY", "").strip(),
+            tts_sentence_silence=float(os.environ.get("TTS_SENTENCE_SILENCE", "0.4")),
         )

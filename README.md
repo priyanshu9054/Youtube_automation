@@ -1,13 +1,13 @@
 # YouTube Shorts Automation
 
 Generates one faceless YouTube Short end-to-end — topic → script (Groq) →
-voiceover (Piper, free + fully local) → stock footage (Pixabay if configured, else free
-Mixkit scraping, else a plain color background as last resort) → background
-music (free Mixkit tracks, mood picked by the script writer to match that
-video's specific topic) → rendered vertical video (ffmpeg) → upload (YouTube
-Data API v3, single `youtube.upload` scope) — runs as a single always-on
-Railway **web service** with an authenticated HTTP trigger (`POST /run`) that
-an external scheduler calls daily. See [section 4](#4-deploy-to-railway).
+voiceover (Piper, free + fully local) → stock footage (Pexels portrait clips,
+keyword-matched per sentence; else Pixabay, else an arbitrary clip as a last
+resort) → background music (free Mixkit tracks, mood picked by the script
+writer to match that video's specific topic) → rendered vertical video (ffmpeg)
+→ upload (YouTube Data API v3, single `youtube.upload` scope) — runs as a
+single always-on Railway **web service** with an HTTP trigger (`POST /run`)
+that an external scheduler calls daily. See [section 4](#4-deploy-to-railway).
 
 ## 1. Credentials you need
 
