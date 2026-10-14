@@ -15,6 +15,11 @@ log = logging.getLogger("footage")
 PEXELS_VIDEOS_URL = "https://api.pexels.com/videos/search"
 PIXABAY_VIDEOS_URL = "https://pixabay.com/api/videos/"
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
+OPENVERSE_IMAGES_URL = "https://api.openverse.org/v1/images/"
+
+# Shorts are 9:16, so this is the aspect ratio a source image should be closest
+# to before it gets cropped.
+TARGET_RATIO = 1920 / 1080
 
 # Appended to every generated image so six separate shots still look like one
 # video. "no text" matters: stock-style prompts otherwise come back with
@@ -391,7 +396,21 @@ def acquire_clip(
             log.warning("AI image generation failed for %r: %s", query, e)
             return None
 
-    order = [_ai, _stock] if prefer_ai else [_stock, _ai]
+    def _openverse() -> str | None:
+        try:
+            link = _fetch_openverse_image(query)
+            if not link:
+                return None
+            img = _download_image(link, work_dir / f"ov_{index:03d}.jpg")
+            _ken_burns(img, duration, out_path, index)
+            return "openverse-cc0"
+        except Exception as e:
+            log.warning("Openverse clip build failed for %r: %s", query, e)
+            return None
+
+    # Openverse needs no key at all, so it sits ahead of generation: it is the
+    # only source that works out of the box on a fresh deploy.
+    order = [_ai, _stock, _openverse] if prefer_ai else [_stock, _openverse, _ai]
     for step in order:
         source = step()
         if source:
@@ -406,3 +425,115 @@ def acquire_clip(
         log.warning("Arbitrary clip failed too (%s); using a colour card.", e)
         generate_fallback_clip(duration, out_path, index)
         return "colour-card"
+
+
+# Enough to fill 1080x1920 with headroom for the zoom, without hauling a
+# 5644x10328 original across the network and through ffmpeg. Oversized sources
+# cost download time and peak memory on a small Railway instance for no visible
+# gain, since the output is 1080 wide either way.
+IDEAL_SOURCE_HEIGHT = 2400
+
+# Below this the upscale to 1920 tall is visible, so the source is rejected.
+MIN_SOURCE_HEIGHT = 1200
+
+
+def _score_openverse(result: dict) -> tuple:
+    """Rank by how little cropping is needed, then by closeness to a sane size."""
+    width = result.get("width") or 0
+    height = result.get("height") or 0
+    if not width or not height:
+        return (-99.0, -99.0)
+    ratio = height / width
+    if height < 1920:
+        # Upscaling shows; treat anything under the output height as a last pick.
+        size_penalty = -(1920 - height) / 1920 - 1.0
+    else:
+        size_penalty = -abs(height - IDEAL_SOURCE_HEIGHT) / IDEAL_SOURCE_HEIGHT
+    return (-abs(ratio - TARGET_RATIO), size_penalty)
+
+
+def _fetch_openverse_image(query: str) -> str | None:
+    """Find a public-domain image for `query`. No API key, no account.
+
+    Restricted to cc0 and pdm because those two carry no attribution
+    requirement -- every other CC licence would oblige the video to credit each
+    photographer on screen.
+
+    One broad request per query variant, ranked locally, rather than a grid of
+    narrow server-side filters: asking for aspect_ratio=tall and size=large cut
+    "hourglass sand" from 91 results to 13, and walking those filter
+    combinations cost about a dozen round trips per sentence.
+    """
+    best_overall = None
+    best_overall_score = None
+
+    for variant in _query_variants(query)[:3]:
+        try:
+            resp = requests.get(
+                OPENVERSE_IMAGES_URL,
+                params={
+                    "q": variant,
+                    "license": "cc0,pdm",
+                    "page_size": 20,
+                    "mature": "false",
+                },
+                headers={"User-Agent": "youtube-automation/1.0"},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            results = [
+                r for r in resp.json().get("results", [])
+                if r.get("url") and r.get("width") and r.get("height")
+                # Skip pathological originals: a 5644x10328 scan is ~20MB to
+                # fetch and decode for a 1080-wide output, and peak memory
+                # matters on a small instance.
+                and r["width"] * r["height"] <= 24_000_000
+            ]
+            if not results:
+                continue
+
+            results.sort(key=_score_openverse, reverse=True)
+            best = results[0]
+            score = _score_openverse(best)
+            if best_overall_score is None or score > best_overall_score:
+                best_overall, best_overall_score = best, score
+
+            # Good enough to stop looking: roughly portrait and big enough that
+            # the zoom will not show softness.
+            if best["height"] / best["width"] >= 1.3 and best["height"] >= 1920:
+                log.info(
+                    "Openverse matched %r via %r (%sx%s, %s)",
+                    query, variant, best["width"], best["height"], best.get("license"),
+                )
+                return best["url"]
+        except Exception as e:
+            log.warning("Openverse lookup failed for %r: %s", variant, e)
+
+    # A 369x500 original blown up to 1080x1920 looks worse than a generated
+    # image or even unrelated-but-sharp footage, so reject it and let the chain
+    # fall through rather than shipping a soft frame.
+    if best_overall and best_overall["height"] >= MIN_SOURCE_HEIGHT:
+        log.info(
+            "Openverse best-effort for %r (%sx%s, %s)",
+            query, best_overall["width"], best_overall["height"], best_overall.get("license"),
+        )
+        return best_overall["url"]
+    if best_overall:
+        log.info(
+            "Openverse only had %sx%s for %r; too small to upscale cleanly.",
+            best_overall["width"], best_overall["height"], query,
+        )
+    return None
+
+
+def _download_image(url: str, out_path: Path) -> Path:
+    resp = requests.get(
+        url, headers={"User-Agent": "youtube-automation/1.0"}, timeout=60, stream=True
+    )
+    resp.raise_for_status()
+    with open(out_path, "wb") as fh:
+        for chunk in resp.iter_content(chunk_size=1 << 16):
+            fh.write(chunk)
+    if out_path.stat().st_size < 1024:
+        raise RuntimeError(f"image at {url} was empty")
+    return out_path
