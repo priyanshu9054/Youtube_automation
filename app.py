@@ -30,6 +30,7 @@ _state = {
     "uploaded": False,
     "video_url": None,
     "upload_skipped_reason": None,
+    "footage_sources": [],
 }
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
@@ -110,6 +111,8 @@ def _run_job() -> None:
         _state["uploaded"] = result.uploaded
         _state["video_url"] = result.video_url
         _state["upload_skipped_reason"] = result.upload_skipped_reason
+        _state["footage_sources"] = result.footage_sources
+        log.info("Footage sources: %s", ", ".join(result.footage_sources) or "none")
         if result.uploaded:
             log.info("Scheduled job finished and published: %s", result.video_url)
         else:
@@ -187,6 +190,7 @@ def run():
             uploaded=False,
             video_url=None,
             upload_skipped_reason=None,
+            footage_sources=[],
         )
         _save_state()
     finally:

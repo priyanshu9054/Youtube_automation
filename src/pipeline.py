@@ -1,7 +1,7 @@
 import logging
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +46,10 @@ class RunResult:
     video_id: Optional[str] = None
     uploaded: bool = False
     upload_skipped_reason: Optional[str] = None
+    # One label per sentence ("openverse-cc0", "mixkit-arbitrary", ...). Without
+    # this the only way to tell relevant footage from arbitrary filler was to
+    # read the container logs by hand, or squint at the published thumbnail.
+    footage_sources: list[str] = field(default_factory=list)
 
     @property
     def video_url(self) -> Optional[str]:
@@ -63,6 +67,7 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
     with tempfile.TemporaryDirectory(prefix="ytauto_") as tmp:
         tmp_path = Path(tmp)
         segments = []
+        footage_sources: list[str] = []
 
         # All sentences in one piper process: the model is loaded once rather
         # than once per sentence, which dominated both runtime and peak memory.
@@ -84,7 +89,7 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
             )
             # acquire_clip degrades internally (stock -> generated -> arbitrary
             # -> colour card), so a single sentence can never fail the run.
-            acquire_clip(
+            footage_sources.append(acquire_clip(
                 sentence.visual_keywords,
                 raw_clip_path,
                 voice_clip.duration_seconds,
@@ -93,7 +98,7 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
                 pollinations_token=cfg.pollinations_token,
                 prefer_ai=cfg.prefer_ai_footage,
                 index=i,
-            )
+            ))
 
             segments.append(
                 Segment(
@@ -138,9 +143,15 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
         except RefreshError as e:
             raise RuntimeError(TOKEN_EXPIRED_HELP) from e
         log.info("Uploaded successfully: https://youtu.be/%s", video_id)
-        return RunResult(video_path=out_path, video_id=video_id, uploaded=True)
+        return RunResult(
+            video_path=out_path, video_id=video_id, uploaded=True,
+            footage_sources=footage_sources,
+        )
 
     reason = "AUTO_UPLOAD is off (or --upload was not passed)"
     log.info("%s; skipping upload.", reason)
     log.info("Rendered video saved at: %s", out_path)
-    return RunResult(video_path=out_path, upload_skipped_reason=reason)
+    return RunResult(
+        video_path=out_path, upload_skipped_reason=reason,
+        footage_sources=footage_sources,
+    )
