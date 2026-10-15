@@ -16,6 +16,13 @@ PEXELS_VIDEOS_URL = "https://api.pexels.com/videos/search"
 PIXABAY_VIDEOS_URL = "https://pixabay.com/api/videos/"
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
 OPENVERSE_IMAGES_URL = "https://api.openverse.org/v1/images/"
+OPENVERSE_TOKEN_URL = "https://api.openverse.org/v1/auth_tokens/token/"
+
+# Why the last Openverse lookup gave up. Surfaced through the clip's source
+# label so a failed run explains itself from /status instead of requiring
+# container logs, which are not reachable from where this is debugged.
+_last_openverse_error: str | None = None
+_cached_token: tuple[str, float] | None = None
 
 # Shorts are 9:16, so this is the aspect ratio a source image should be closest
 # to before it gets cropped.
@@ -418,9 +425,13 @@ def acquire_clip(
             return source
 
     try:
-        log.warning("No relevant footage for %r; using an arbitrary clip.", query)
+        reason = _last_openverse_error or "unknown"
+        log.warning(
+            "No relevant footage for %r (openverse: %s); using an arbitrary clip.",
+            query, reason,
+        )
         download_clip(_fetch_unrelated_mixkit_clip(), out_path)
-        return "mixkit-arbitrary"
+        return f"mixkit-arbitrary[{reason}]"
     except Exception as e:
         log.warning("Arbitrary clip failed too (%s); using a colour card.", e)
         generate_fallback_clip(duration, out_path, index)
@@ -452,6 +463,42 @@ def _score_openverse(result: dict) -> tuple:
     return (-abs(ratio - TARGET_RATIO), size_penalty)
 
 
+def _openverse_token() -> str | None:
+    """Exchange client credentials for a bearer token, cached until it expires.
+
+    Anonymous callers get 20 requests/min and 200/day per IP, and Railway's
+    egress IP is shared with every other tenant, so that budget can already be
+    spent before this process starts.
+    """
+    global _cached_token
+    client_id = os.environ.get("OPENVERSE_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("OPENVERSE_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        return None
+
+    if _cached_token and _cached_token[1] > time.time() + 60:
+        return _cached_token[0]
+
+    try:
+        resp = requests.post(
+            OPENVERSE_TOKEN_URL,
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        token = payload["access_token"]
+        _cached_token = (token, time.time() + float(payload.get("expires_in", 43200)))
+        return token
+    except Exception as e:
+        log.warning("Openverse token request failed: %s", e)
+        return None
+
+
 def _fetch_openverse_image(query: str) -> str | None:
     """Find a public-domain image for `query`. No API key, no account.
 
@@ -464,8 +511,15 @@ def _fetch_openverse_image(query: str) -> str | None:
     "hourglass sand" from 91 results to 13, and walking those filter
     combinations cost about a dozen round trips per sentence.
     """
+    global _last_openverse_error
+    _last_openverse_error = None
     best_overall = None
     best_overall_score = None
+
+    headers = {"User-Agent": "youtube-automation/1.0"}
+    token = _openverse_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     # Openverse allows 20 requests/min and 200/day for anonymous callers, per
     # IP, and Railway's egress IP is shared. Six sentences x3 variants sat right
@@ -482,8 +536,8 @@ def _fetch_openverse_image(query: str) -> str | None:
                     "page_size": 20,
                     "mature": "false",
                 },
-                headers={"User-Agent": "youtube-automation/1.0"},
-                timeout=20,
+                headers=headers,
+                timeout=45,
             )
             resp.raise_for_status()
             results = [
@@ -493,6 +547,11 @@ def _fetch_openverse_image(query: str) -> str | None:
                 # fetch and decode for a 1080-wide output, and peak memory
                 # matters on a small instance.
                 and r["width"] * r["height"] <= 24_000_000
+                # Filter before ranking, not after: the score weighs aspect
+                # ratio first, so a small but perfectly 9:16 image outranks a
+                # large one and then gets rejected for being small -- losing the
+                # usable candidate sitting right behind it.
+                and r["height"] >= MIN_SOURCE_HEIGHT
             ]
             if not results:
                 continue
@@ -517,13 +576,16 @@ def _fetch_openverse_image(query: str) -> str | None:
     # A 369x500 original blown up to 1080x1920 looks worse than a generated
     # image or even unrelated-but-sharp footage, so reject it and let the chain
     # fall through rather than shipping a soft frame.
-    if best_overall and best_overall["height"] >= MIN_SOURCE_HEIGHT:
+    if not best_overall and _last_openverse_error is None:
+        _last_openverse_error = "no-results"
+    if best_overall:
         log.info(
             "Openverse best-effort for %r (%sx%s, %s)",
             query, best_overall["width"], best_overall["height"], best_overall.get("license"),
         )
         return best_overall["url"]
     if best_overall:
+        _last_openverse_error = f"too-small({best_overall['width']}x{best_overall['height']})"
         log.info(
             "Openverse only had %sx%s for %r; too small to upscale cleanly.",
             best_overall["width"], best_overall["height"], query,
