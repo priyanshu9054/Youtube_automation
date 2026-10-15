@@ -467,7 +467,12 @@ def _fetch_openverse_image(query: str) -> str | None:
     best_overall = None
     best_overall_score = None
 
-    for variant in _query_variants(query)[:3]:
+    # Openverse allows 20 requests/min and 200/day for anonymous callers, per
+    # IP, and Railway's egress IP is shared. Six sentences x3 variants sat right
+    # on the burst ceiling, and once tripped every lookup fails and the whole
+    # video falls back to arbitrary footage. Two variants keeps a 6-sentence run
+    # at 12 requests worst case.
+    for variant in _query_variants(query)[:2]:
         try:
             resp = requests.get(
                 OPENVERSE_IMAGES_URL,
@@ -500,7 +505,7 @@ def _fetch_openverse_image(query: str) -> str | None:
 
             # Good enough to stop looking: roughly portrait and big enough that
             # the zoom will not show softness.
-            if best["height"] / best["width"] >= 1.3 and best["height"] >= 1920:
+            if best["height"] / best["width"] >= 1.2 and best["height"] >= 1600:
                 log.info(
                     "Openverse matched %r via %r (%sx%s, %s)",
                     query, variant, best["width"], best["height"], best.get("license"),
