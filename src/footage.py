@@ -208,6 +208,32 @@ def _fetch_pixabay_clip(query: str, api_key: str, min_duration: float) -> str | 
     return None
 
 
+# Used only when a sentence's own keywords find nothing. The original code mixed
+# these into every search, which is what made footage unrelated; as a genuine
+# last resort before arbitrary filler they at least keep the video on theme.
+THEMATIC_FALLBACKS = [
+    "ancient stone statue",
+    "calm sea horizon",
+    "mountain mist",
+    "candle flame dark",
+    "old book pages",
+    "empty stone path",
+    "storm clouds sky",
+    "still lake water",
+]
+
+
+def _fetch_thematic_image(index: int) -> str | None:
+    """Last on-theme attempt, rotating so consecutive videos differ."""
+    for offset in range(3):
+        term = THEMATIC_FALLBACKS[(index + offset) % len(THEMATIC_FALLBACKS)]
+        link = _fetch_openverse_image(term)
+        if link:
+            log.info("Using thematic fallback %r", term)
+            return link
+    return None
+
+
 def _fetch_unrelated_mixkit_clip() -> str:
     """Last-resort background clip. NOT a search -- it cannot be.
 
@@ -412,6 +438,10 @@ def acquire_clip(
             _ken_burns(img, duration, out_path, index)
             return "openverse-cc0"
         except Exception as e:
+            # Without this the search succeeds, the build fails, and the clip is
+            # labelled "unknown" -- indistinguishable from never having looked.
+            global _last_openverse_error
+            _last_openverse_error = f"build-failed:{type(e).__name__}"
             log.warning("Openverse clip build failed for %r: %s", query, e)
             return None
 
@@ -423,6 +453,17 @@ def acquire_clip(
         if source:
             log.info("Footage for %r from %s", query, source)
             return source
+
+    # On-theme imagery beats an arbitrary nightclub clip for a philosophy channel.
+    try:
+        thematic = _fetch_thematic_image(index)
+        if thematic:
+            img = _download_image(thematic, work_dir / f"th_{index:03d}.jpg")
+            _ken_burns(img, duration, out_path, index)
+            log.info("Footage for %r from openverse-thematic", query)
+            return "openverse-thematic"
+    except Exception as e:
+        log.warning("Thematic fallback failed for %r: %s", query, e)
 
     try:
         reason = _last_openverse_error or "unknown"
@@ -445,7 +486,7 @@ def acquire_clip(
 IDEAL_SOURCE_HEIGHT = 2400
 
 # Below this the upscale to 1920 tall is visible, so the source is rejected.
-MIN_SOURCE_HEIGHT = 1200
+MIN_SOURCE_HEIGHT = 1000
 
 
 def _score_openverse(result: dict) -> tuple:
