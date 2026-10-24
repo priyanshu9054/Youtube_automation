@@ -15,7 +15,9 @@ that an external scheduler calls daily. See [section 4](#4-deploy-to-railway).
 |---|---|---|
 | `GROQ_API_KEY` | Yes | https://console.groq.com/keys |
 | `PIXABAY_API_KEY` | No — leave blank to use the free Mixkit fallback instead | https://pixabay.com/api/docs/ (instant, free) |
-| `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` / `YOUTUBE_REFRESH_TOKEN` | Yes | See step 2 below |
+| `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` | Yes | See step 2 below |
+| `YOUTUBE_REFRESH_TOKEN` | Seed only | See step 2. Read once to fill an empty token store, then ignored — the live token lives in `data/tokens.db` |
+| `AUTH_SETUP_TOKEN` | Yes, to re-authorize in a browser | Any long random string: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 
 **Note on `GROQ_MODEL` and rate limits:** the current default (`qwen/qwen3.8-27b`) has
 a free/on-demand tier limit of 1,000 Output Tokens Per Minute (OTPM). The script writer
@@ -47,7 +49,13 @@ Full walkthrough with screenshots-in-words is in
    This opens a browser, asks you to approve one scope (`youtube.upload`),
    and prints `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` /
    `YOUTUBE_REFRESH_TOKEN`.
-5. Put all three in `.env` (copy `.env.example` first).
+5. Put all three in `.env` (copy `.env.example` first). The script also
+   writes the refresh token into the local token store (`data/tokens.db`),
+   which is what the app actually reads at runtime.
+6. Add `<your-service-url>/oauth/callback` to the OAuth client's
+   **Authorized redirect URIs** in Google Cloud Console. This is what lets you
+   re-authorize later in a browser instead of re-running this script — see
+   [Refresh tokens](#refresh-tokens-how-expiry-is-handled).
 
 ## 3. Run one video locally
 
@@ -86,11 +94,22 @@ config (`Dockerfile` builder, `startCommand = "python app.py"`,
    (`GROQ_API_KEY`, `YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN`, `PIXABAY_API_KEY`
    if you have one, `CHANNEL_NICHE`, etc). Set `AUTO_UPLOAD=true` only once
    you've reviewed a few local renders and trust the output.
-4. Attach a **volume** mounted at `/app/data` to the service. Topic-dedup
-   history (`data/posted_topics.json`) is written inside the container, which
-   is otherwise wiped on every restart — without the volume, the script writer
-   won't remember what topics it already covered, and you'll get more repeats.
-5. Verify the deploy end to end, in this order:
+4. Attach a **volume** mounted at `/app/data` to the service. **This is not
+   optional.** Three things live there and none survive a restart without it:
+   - `data/tokens.db` — the YouTube refresh token. Without the volume, every
+     restart reverts it to the `YOUTUBE_REFRESH_TOKEN` variable, which is the
+     stale hand-maintained value this setup exists to stop depending on.
+   - `data/run_state.json` — the last run's result, so `/status` can report a
+     crash instead of showing nothing.
+   - `data/posted_topics.json` — topic-dedup history; without it the script
+     writer forgets what it covered and repeats itself.
+5. Set `AUTH_SETUP_TOKEN` in the variables (see step 1), and add
+   `https://<your-service>.up.railway.app/oauth/callback` to the OAuth
+   client's *Authorized redirect URIs* in Google Cloud Console. Together these
+   turn the weekly token expiry into one click — see
+   [Refresh tokens](#refresh-tokens-how-expiry-is-handled). `PUBLIC_BASE_URL`
+   is detected from `RAILWAY_PUBLIC_DOMAIN`, so leave it unset on Railway.
+6. Verify the deploy end to end, in this order:
 
    ```sh
    curl -s https://<your-service>.up.railway.app/health
@@ -130,7 +149,41 @@ a run with `AUTO_UPLOAD` off looked identical to a successful one. Check
 | Symptom | Cause | Fix |
 |---|---|---|
 | `uploaded: false`, `upload_skipped_reason` set | `AUTO_UPLOAD` is not `true` in the Railway variables | Set it. Renders still happen without it; uploads don't |
-| `last_error` mentions `invalid_grant` | `YOUTUBE_REFRESH_TOKEN` expired — Google kills refresh tokens after 7 days while the OAuth consent screen is in *Testing* | Re-mint with `scripts/authorize_youtube.py`, paste into the **Railway** variables (not just `.env`), and publish the OAuth app to stop it recurring |
+| `last_error` mentions `invalid_grant` | The refresh token expired — Google kills refresh tokens after 7 days while the OAuth consent screen is in *Testing* | Open `<service-url>/auth/start?key=<AUTH_SETUP_TOKEN>` and approve the prompt. That writes the new token into the store with no redeploy. Publish the OAuth app to **Production** to stop it recurring at all |
+| `/auth/start` returns 503 | `AUTH_SETUP_TOKEN` is unset, or the public URL could not be determined | Set `AUTH_SETUP_TOKEN` (and `PUBLIC_BASE_URL` if not on Railway) |
+| `/auth/start` returns 403 | Wrong or missing `?key=` | It must equal `AUTH_SETUP_TOKEN` exactly |
+| Google says `redirect_uri_mismatch` | `<service-url>/oauth/callback` is not registered on the OAuth client | Add it under *Authorized redirect URIs* in Google Cloud Console |
+| The token reverts to an old value after a deploy | No volume mounted at `/app/data`, so the store is wiped and reseeded from `YOUTUBE_REFRESH_TOKEN` | Attach the volume (deploy step 4) |
+
+## Refresh tokens: how expiry is handled
+
+While the OAuth consent screen is in **Testing** mode, Google expires the
+refresh token 7 days after consent was granted, whether or not it gets used.
+Nothing in this codebase can prevent that — a token Google has revoked cannot
+be renewed, only replaced. Publishing the OAuth app to **Production** in Google
+Cloud Console is the only thing that actually stops the 7-day clock.
+
+What the code does instead is own the token so that replacing it never means
+editing a variable by hand:
+
+- The live token lives in SQLite at `$DATA_DIR/tokens.db`, not in the
+  environment. `YOUTUBE_REFRESH_TOKEN` is read exactly once, to fill an empty
+  store, and is ignored from then on.
+- When Google hands back a replacement token during a refresh, it is saved
+  automatically. No action needed.
+- When the token is genuinely dead, open
+  `<service-url>/auth/start?key=<AUTH_SETUP_TOKEN>` and approve the Google
+  prompt. The new token is written straight into the store — no local script,
+  no Railway variable, no redeploy. `last_error` in `/status` spells this out,
+  including the URL.
+- The token is checked **before** rendering starts. A dead token now fails in
+  about a second, instead of after a full render whose video was then thrown
+  away, and the run does not consume a topic from the dedup history.
+
+`/auth/start` and `/oauth/callback` are public URLs, so they are gated on
+`AUTH_SETUP_TOKEN` and refuse to serve without it. The gate matters: the app
+only ever requests `youtube.upload`, so whoever completes the consent flow last
+decides which channel gets uploaded to.
 
 ## 5. Content policy — read before turning on `AUTO_UPLOAD`
 
@@ -171,7 +224,9 @@ src/footage.py                Pixabay search (if keyed) -> Mixkit fallback -> co
 src/music.py                   Mixkit mood-matched background music search
 src/render.py                 ffmpeg: normalize clips, concat, mix music under voice, burn captions
 src/uploader.py                YouTube resumable upload
-src/youtube_client.py          OAuth client (single youtube.upload scope)
+src/youtube_client.py          OAuth client (single youtube.upload scope); refreshes up front and persists rotated tokens
+src/token_store.py             SQLite store holding the live refresh token
+src/oauth_web.py               /auth/start + /oauth/callback: re-authorize in a browser, no redeploy
 src/history.py                  Local JSON log of past titles (topic dedup)
 src/pipeline.py                  Orchestrates one full run
 scripts/authorize_youtube.py     One-time local OAuth flow

@@ -13,24 +13,12 @@ from src.history import load_recent_titles, record_title
 from src.music import download_music, find_music_url
 from src.render import Segment, render_video
 from src.script_writer import generate_script
+from src.token_store import TokenStore
 from src.uploader import upload_short
 from src.voice import synthesize_sentences
-from src.youtube_client import build_youtube_client
+from src.youtube_client import TokenRejected, build_youtube_client, reauth_hint
 
 log = logging.getLogger("pipeline")
-
-# Google expires refresh tokens after 7 days while the OAuth consent screen is
-# in "Testing", so this failure recurs weekly until the app is published. The
-# raw google-auth error is just "invalid_grant", which says nothing about what
-# to actually do, and a daily job that fails this way is easy to miss.
-TOKEN_EXPIRED_HELP = (
-    "YouTube rejected the refresh token (invalid_grant: expired or revoked). "
-    "Re-mint it by running scripts/authorize_youtube.py, then update "
-    "YOUTUBE_REFRESH_TOKEN in the Railway service variables -- updating .env "
-    "alone does not change the deployed service. If the Google OAuth consent "
-    "screen is still in Testing mode, tokens expire every 7 days; publish the "
-    "app in Google Cloud Console to stop this from recurring."
-)
 
 
 @dataclass(frozen=True)
@@ -56,7 +44,26 @@ class RunResult:
         return f"https://youtu.be/{self.video_id}" if self.video_id else None
 
 
-def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
+def run_once(
+    cfg: Config,
+    out_dir: Path,
+    upload: bool,
+    store: Optional[TokenStore] = None,
+) -> RunResult:
+    store = store or TokenStore(cfg.token_db_path)
+
+    youtube = None
+    if upload:
+        # Authorize before anything expensive happens. A dead refresh token is
+        # by far the most common way this job fails, and catching it here costs
+        # one HTTP request -- whereas catching it at upload time, as this used
+        # to, cost a full script + voiceover + footage + render first and then
+        # discarded the finished video. It also leaves the topic unspent: a run
+        # that dies here has not yet recorded a title as posted.
+        log.info("Verifying YouTube credentials before rendering...")
+        youtube = build_youtube_client(cfg, store)
+        log.info("YouTube credentials accepted.")
+
     recent_titles = load_recent_titles()
 
     log.info("Generating script with %s...", cfg.groq_model)
@@ -138,10 +145,12 @@ def run_once(cfg: Config, out_dir: Path, upload: bool) -> RunResult:
     if upload:
         log.info("Uploading to YouTube (privacy=%s)...", cfg.upload_privacy_status)
         try:
-            youtube = build_youtube_client(cfg)
             video_id = upload_short(youtube, out_path, script, cfg.upload_privacy_status)
         except RefreshError as e:
-            raise RuntimeError(TOKEN_EXPIRED_HELP) from e
+            # The preflight above passed, so the token died or was revoked
+            # during the render itself. Same remedy, so report it identically.
+            store.mark_error(f"refresh rejected mid-run: {e}")
+            raise TokenRejected(reauth_hint(cfg)) from e
         log.info("Uploaded successfully: https://youtu.be/%s", video_id)
         return RunResult(
             video_path=out_path, video_id=video_id, uploaded=True,

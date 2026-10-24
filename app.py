@@ -8,7 +8,9 @@ from pathlib import Path
 from flask import Flask, jsonify, request
 
 from src.config import Config
+from src.oauth_web import build_oauth_blueprint
 from src.pipeline import run_once
+from src.token_store import TokenStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("app")
@@ -35,6 +37,13 @@ _state = {
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
 STATE_FILE = DATA_DIR / "run_state.json"
+
+# The refresh token lives here rather than in an environment variable, so
+# that the re-auth flow below can replace it without a redeploy and the
+# refresh path can keep any replacement Google hands back. On Railway this
+# directory must be a mounted volume (see railway.toml) or both the token and
+# the run state above are lost on every restart.
+TOKEN_STORE = TokenStore(DATA_DIR / "tokens.db")
 
 # A run that has been "in progress" longer than this is treated as dead. The
 # job runs in a daemon thread inside this process, so if it is killed (Railway
@@ -105,7 +114,7 @@ def _reclaim_stale_lock() -> None:
 def _run_job() -> None:
     try:
         cfg = Config.load()
-        result = run_once(cfg, Path("output"), upload=cfg.auto_upload)
+        result = run_once(cfg, Path("output"), upload=cfg.auto_upload, store=TOKEN_STORE)
         _state["last_result"] = str(result.video_path)
         _state["last_error"] = None
         _state["uploaded"] = result.uploaded
@@ -209,11 +218,17 @@ def dry_run():
     independent of whatever is going on with /run + /status."""
     try:
         cfg = Config.load()
-        result = run_once(cfg, Path("output"), upload=False)
+        result = run_once(cfg, Path("output"), upload=False, store=TOKEN_STORE)
         return jsonify(status="ok", result=str(result.video_path), uploaded=False), 200
     except Exception as e:
         log.exception("Dry run failed")
         return jsonify(status="error", error=str(e)), 500
+
+
+# /auth/start + /oauth/callback: re-authorizing with Google in a browser
+# rewrites the stored token in place, which is the whole point -- the weekly
+# expiry used to be repaired by hand through the Railway dashboard.
+app.register_blueprint(build_oauth_blueprint(TOKEN_STORE))
 
 
 if __name__ == "__main__":

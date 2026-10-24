@@ -24,6 +24,7 @@ import tempfile
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 import webbrowser
 
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -154,6 +155,27 @@ def update_env_file(
         f.write(content)
 
 
+def save_to_token_store(refresh_token: str) -> None:
+    """Write the token into the SQLite store the app actually reads at runtime.
+
+    Updating .env alone no longer configures a local run: src/youtube_client.py
+    reads the store first and only falls back to YOUTUBE_REFRESH_TOKEN when the
+    store is empty. Writing both keeps a local checkout consistent either way.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    try:
+        from src.token_store import TokenStore
+
+        db_path = Path(repo_root) / os.environ.get("DATA_DIR", "data") / "tokens.db"
+        TokenStore(db_path).save(refresh_token)
+        print(f"Saved to the local token store: {db_path}")
+    except Exception as e:
+        print(f"Warning: could not write the local token store ({e}).")
+        print("The .env value above still works -- it seeds an empty store.")
+
+
 def main() -> None:
     client_secret_path = sys.argv[1] if len(sys.argv) > 1 else find_client_secret()
 
@@ -275,6 +297,7 @@ def main() -> None:
         sys.exit(1)
 
     update_env_file(client_id, client_secret, refresh_token)
+    save_to_token_store(refresh_token)
 
     print("\n" + "=" * 70)
     print("Authorization complete! .env has been successfully updated:")
@@ -282,6 +305,12 @@ def main() -> None:
     print(f"YOUTUBE_CLIENT_SECRET={client_secret}")
     print(f"YOUTUBE_REFRESH_TOKEN={refresh_token}")
     print("=" * 70)
+    print(
+        "\nNote: on the deployed service you no longer need to paste this into\n"
+        "the Railway variables. Open <service-url>/auth/start?key=$AUTH_SETUP_TOKEN\n"
+        "in a browser and approve the prompt -- that writes the token straight\n"
+        "into the service's token store, with no redeploy."
+    )
 
 
 if __name__ == "__main__":

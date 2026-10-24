@@ -42,6 +42,20 @@ def _privacy_status() -> str:
     return value
 
 
+def _public_base_url() -> str:
+    """Externally reachable origin of this service, with no trailing slash.
+
+    Needed to build the OAuth redirect URI for the browser re-auth flow. On
+    Railway this is already in the environment, so the common case needs no
+    configuration at all; PUBLIC_BASE_URL overrides it for local tunnels.
+    """
+    explicit = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    return f"https://{domain}" if domain else ""
+
+
 @dataclass(frozen=True)
 class Config:
     groq_api_key: str
@@ -70,6 +84,14 @@ class Config:
     # sentences otherwise butt straight together, since each one is synthesised
     # and rendered as its own segment.
     tts_sentence_silence: float = 0.4
+    # Where run state and the OAuth token store live. On Railway this must be a
+    # mounted volume or both are lost on every restart.
+    data_dir: Path = Path("data")
+    public_base_url: str = ""
+    # Shared secret guarding /auth/start. Without it the re-auth endpoints
+    # refuse to serve: they are public URLs, and an unguarded one would let a
+    # stranger point this uploader at their own YouTube channel.
+    auth_setup_token: str = ""
 
     @classmethod
     def load(cls) -> "Config":
@@ -78,7 +100,12 @@ class Config:
             pixabay_api_key=os.environ.get("PIXABAY_API_KEY", "").strip(),
             youtube_client_id=_require("YOUTUBE_CLIENT_ID"),
             youtube_client_secret=_require("YOUTUBE_CLIENT_SECRET"),
-            youtube_refresh_token=_require("YOUTUBE_REFRESH_TOKEN"),
+            # Optional on purpose: this only ever seeds an empty token
+            # store (see src/token_store.py). Once the app has authorized
+            # itself once, the store holds the live token and this is dead
+            # weight -- which is the point, since it was the thing that had
+            # to be edited by hand every time Google expired a token.
+            youtube_refresh_token=os.environ.get("YOUTUBE_REFRESH_TOKEN", "").strip(),
             channel_niche=os.environ.get(
                 "CHANNEL_NICHE", "interesting bite-sized facts"
             ),
@@ -96,4 +123,11 @@ class Config:
             pollinations_token=os.environ.get("POLLINATIONS_TOKEN", "").strip(),
             prefer_ai_footage=os.environ.get("PREFER_AI_FOOTAGE", "false").lower() == "true",
             tts_sentence_silence=float(os.environ.get("TTS_SENTENCE_SILENCE", "0.4")),
+            data_dir=Path(os.environ.get("DATA_DIR", "data")),
+            public_base_url=_public_base_url(),
+            auth_setup_token=os.environ.get("AUTH_SETUP_TOKEN", "").strip(),
         )
+
+    @property
+    def token_db_path(self) -> Path:
+        return self.data_dir / "tokens.db"

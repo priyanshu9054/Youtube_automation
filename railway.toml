@@ -7,6 +7,16 @@
 # boots the container for that window, which would make /run unreachable
 # the rest of the day.
 
+# A VOLUME IS REQUIRED. Mount one at /app/data (Railway dashboard -> this
+# service -> Settings -> Volumes). Two things live there and neither survives a
+# restart without it:
+#   data/tokens.db       the YouTube OAuth refresh token, which the app
+#                        rewrites itself on rotation and on re-authorization
+#   data/run_state.json  the last run's result, so /status can report a crash
+# Without the volume a redeploy silently reverts the token to the
+# YOUTUBE_REFRESH_TOKEN seed, which is exactly the hand-maintained value this
+# setup exists to stop depending on.
+
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
