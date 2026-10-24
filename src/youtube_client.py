@@ -57,15 +57,14 @@ def authorize(cfg: Config, store: TokenStore) -> Credentials:
     five-minute render — the pipeline used to discover this only at upload
     time, after the video existed, and then threw the video away.
     """
+    # Let a human override by editing YOUTUBE_REFRESH_TOKEN. This is a no-op
+    # unless the variable actually changed, so a rotated token in the store is
+    # never clobbered by the stale value still sitting in the environment.
+    if cfg.youtube_refresh_token and store.sync_from_env(cfg.youtube_refresh_token):
+        log.info("Adopted a new YOUTUBE_REFRESH_TOKEN from the environment.")
+
     stored = store.read()
     refresh_token = stored.refresh_token if stored else None
-
-    if not refresh_token and cfg.youtube_refresh_token:
-        # First boot after the move to the store, or a store that was lost with
-        # its volume: adopt the env var once, then never prefer it again.
-        if store.seed(cfg.youtube_refresh_token):
-            log.info("Token store was empty; seeded it from YOUTUBE_REFRESH_TOKEN.")
-        refresh_token = cfg.youtube_refresh_token
 
     if not refresh_token:
         raise TokenUnavailable(

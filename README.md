@@ -167,11 +167,17 @@ What the code does instead is own the token so that replacing it never means
 editing a variable by hand:
 
 - The live token lives in SQLite at `$DATA_DIR/tokens.db`, not in the
-  environment. `YOUTUBE_REFRESH_TOKEN` is read exactly once, to fill an empty
-  store, and is ignored from then on.
+  environment. `YOUTUBE_REFRESH_TOKEN` still works as a manual override:
+  **change** it and the app adopts the new value on the next run, even over a
+  dead stored token. Leaving it untouched is a no-op, so a token the app
+  rotated to on its own is never clobbered by the stale value in the variable.
 - When Google hands back a replacement token during a refresh, it is saved
   automatically. No action needed.
-- When the token is genuinely dead, open
+- To fix it from your laptop: `python scripts/login.py`. It opens a browser,
+  asks for the one permission, and prints the single `YOUTUBE_REFRESH_TOKEN=...`
+  line to paste into the Railway variables (also copied to your clipboard).
+  Pasting it is all that is needed.
+- Or fix it without leaving the browser: open
   `<service-url>/auth/start?key=<AUTH_SETUP_TOKEN>` and approve the Google
   prompt. The new token is written straight into the store — no local script,
   no Railway variable, no redeploy. `last_error` in `/status` spells this out,
@@ -229,5 +235,6 @@ src/token_store.py             SQLite store holding the live refresh token
 src/oauth_web.py               /auth/start + /oauth/callback: re-authorize in a browser, no redeploy
 src/history.py                  Local JSON log of past titles (topic dedup)
 src/pipeline.py                  Orchestrates one full run
-scripts/authorize_youtube.py     One-time local OAuth flow
+scripts/login.py                 One command: sign in, get the variable to paste
+scripts/authorize_youtube.py     Older/fuller OAuth flow (web + desktop clients)
 ```
