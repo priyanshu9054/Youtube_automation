@@ -12,3 +12,5 @@ data/
 *.mp3
 *.srt
 voices/
+.env.bak-*
+.env.*.bak
